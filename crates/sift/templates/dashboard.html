@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Sift · HOLDFAST</title>
+  <style>{{CSS}}</style>
+</head>
+<body class="page-ops">
+{{TOPBAR}}
+<main class="ops">
+  <div class="ops__head">
+    <div>
+      <h1 class="ops__title">Log search</h1>
+      <p class="ops__sub">Aggregated logs across the estate, clustered into message templates.</p>
+    </div>
+    <div class="stats">
+      <div class="stat"><span class="stat__num">{{STAT_LOGS}}</span><span class="stat__label">logs</span></div>
+      <div class="stat"><span class="stat__num">{{STAT_TEMPLATES}}</span><span class="stat__label">templates</span></div>
+      <div class="stat"><span class="stat__num">{{STAT_RESULTS}}</span><span class="stat__label">results</span></div>
+    </div>
+  </div>
+
+  {{FILTER_BAR}}
+  {{ACTIVE_FILTER}}
+
+  <div class="ops__grid">
+    <section class="logpanel card">
+      <table class="logtable">
+        <thead>
+          <tr>
+            <th class="col-time">Time (UTC)</th>
+            <th class="col-sev">Severity</th>
+            <th class="col-host">Host</th>
+            <th class="col-app">App</th>
+            <th class="col-msg">Message</th>
+          </tr>
+        </thead>
+        <tbody>
+          {{ROWS}}
+        </tbody>
+      </table>
+    </section>
+
+    <aside class="sidepanel card">
+      <h2 class="panel__title">Top templates</h2>
+      <p class="panel__hint">Click a template to filter the table to that message shape.</p>
+      <div class="tmpl-list">
+        {{TEMPLATES}}
+      </div>
+    </aside>
+  </div>
+</main>
+</body>
+</html>

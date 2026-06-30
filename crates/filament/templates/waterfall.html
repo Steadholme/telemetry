@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Trace {{TRACE_ID}} · Filament · HOLDFAST</title>
+  <style>{{CSS}}</style>
+</head>
+<body class="page-console">
+{{TOPBAR}}
+<main class="console">
+  <a class="back-link" href="/">&larr; All traces</a>
+  <div class="console__head">
+    <h1 class="trace-title">Trace <span class="mono">{{TRACE_ID}}</span></h1>
+    <p class="sub">{{META}}</p>
+  </div>
+  <div class="legend">{{LEGEND}}</div>
+  <div class="card">
+    <div class="card__body waterfall">
+      {{ROWS}}
+    </div>
+  </div>
+</main>
+</body>
+</html>

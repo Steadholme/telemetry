@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Traces · Filament · HOLDFAST</title>
+  <style>{{CSS}}</style>
+</head>
+<body class="page-console">
+{{TOPBAR}}
+<main class="console">
+  <div class="console__head">
+    <h1>Distributed traces</h1>
+    <p class="sub">Spans collapsed into traces across the estate. Pick one to open its waterfall.</p>
+  </div>
+  {{FILTERS}}
+  <div class="list-summary muted">{{SUMMARY}}</div>
+  <div class="trace-list">
+    {{ROWS}}
+  </div>
+</main>
+</body>
+</html>
