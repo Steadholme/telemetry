@@ -16,13 +16,17 @@ path = "src/main.rs"
 # SIFT_DATABASE_URL (Hindsight/Watchtower RCA reads it directly) and Filament its traces DB.
 sift = { path = "crates/sift" }
 filament = { path = "crates/filament" }
+# Vitals (host metrics TSDB + dashboard + self-baselining anomaly detector). Vendored verbatim and
+# reused as a third demux surface (vitals.w33d.xyz). Four services hardcode http://vitals:8300, so
+# this same demux is also bound on :8300 — see the second listener in main.
+vitals = { path = "crates/vitals" }
 
 # HTTP framework — the outer Host-demux router + the per-surface routers returned by each crate's
 # `app()`. Same axum the surfaces use.
 axum = "0.8"
 # Async runtime: connect/migrate the two Postgres stores at startup, start each surface's audit
 # emitter, then serve. `net` backs the dependency-free `healthcheck` subcommand's loopback probe.
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "io-util"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "io-util", "time"] }
 # `ServiceExt::oneshot` drives the chosen per-surface Router for one request inside the demux.
 tower = { version = "0.5", features = ["util"] }
 # Structured logging (shared with the surfaces).

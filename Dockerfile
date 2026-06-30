@@ -34,7 +34,9 @@ COPY --from=builder /build/target/release/telemetry /usr/local/bin/telemetry
 
 USER telemetry
 ENV BIND_ADDR=0.0.0.0:9100
-EXPOSE 9100
+# :9100 fronts the logs/traces/vitals subdomains; :8300 is the second listener serving the SAME
+# demux so the estate's hardcoded `http://vitals:8300` metric POSTs reach the vitals arm.
+EXPOSE 9100 8300
 
 # Dependency-free liveness probe -> GET /healthz on the loopback, exit 0/1.
 HEALTHCHECK --interval=10s --timeout=5s --start-period=5s --retries=3 \
