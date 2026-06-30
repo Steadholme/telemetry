@@ -125,6 +125,23 @@ async fn build_logs() -> Result<Router, String> {
         store: Arc::new(pg),
         audit,
     };
+
+    // Preserve Sift's syslog UDP+TCP listeners (`SIFT_SYSLOG_ADDR`, default :5514). The standalone
+    // Sift ran them alongside its HTTP server (`sift::run`); the demux composes only the HTTP router,
+    // so spawn the listeners here so logs.w33d.xyz keeps BOTH ingest paths (HTTP /ingest + syslog).
+    match state.config.syslog_addr.parse::<SocketAddr>() {
+        Ok(syslog_addr) => {
+            tokio::spawn(sift::syslog::serve_udp(state.clone(), syslog_addr));
+            tokio::spawn(sift::syslog::serve_tcp(state.clone(), syslog_addr));
+            tracing::info!(%syslog_addr, "sift syslog listeners started (udp + tcp)");
+        }
+        Err(e) => tracing::warn!(
+            addr = %state.config.syslog_addr,
+            error = %e,
+            "invalid SIFT_SYSLOG_ADDR — syslog listeners not started"
+        ),
+    }
+
     Ok(sift::app(state))
 }
 
