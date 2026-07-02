@@ -1,5 +1,6 @@
 //! The SSO operator surface: the server-rendered dashboard (`GET /`) and the JSON search API
-//! (`GET /api/search`). Both share one filter parse + the keyword-overlap ranking.
+//! (`GET /api/search`). Both share one filter parse, source/time/level filters, keyset pagination,
+//! and the keyword-overlap ranking.
 //!
 //! Identity comes from the gateway-injected `X-Auth-*` (Sift does no login of its own); the
 //! handlers TRUST it because Sift is internal-only behind Sluice. The filter bar is a GET form, so
@@ -9,7 +10,7 @@ use axum::extract::{Query, State};
 use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Response};
 use axum::Json;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::auth;
@@ -26,6 +27,11 @@ pub struct SearchQuery {
     #[serde(default)]
     pub q: String,
     #[serde(default)]
+    pub host: String,
+    /// Query-string alias accepted for Datadog/Grafana-style "source" filters.
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
     pub app: String,
     #[serde(default)]
     pub severity: String,
@@ -38,6 +44,20 @@ pub struct SearchQuery {
     pub until: String,
     #[serde(default)]
     pub limit: Option<usize>,
+    pub before_ts: Option<i64>,
+    #[serde(default)]
+    pub before_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct SearchCursor {
+    pub before_ts: i64,
+    pub before_id: String,
+}
+
+struct SearchPage {
+    rows: Vec<LogEntry>,
+    next_cursor: Option<SearchCursor>,
 }
 
 /// `GET /` — the dashboard: filter bar + recent log table + top-templates panel.
@@ -47,10 +67,11 @@ pub async fn index(
     Query(qy): Query<SearchQuery>,
 ) -> Response {
     let email = auth::display_email(&headers);
-    let filter = to_filter(&qy);
+    let page_limit = page_limit(&qy);
+    let filter = to_filter(&qy, fetch_limit(page_limit));
 
-    let mut rows = state.store.search(&filter).await.unwrap_or_default();
-    rows = rank_by_overlap(rows, filter.q.as_deref());
+    let rows = state.store.search(&filter).await.unwrap_or_default();
+    let page = page_from_rows(rows, page_limit, filter.q.as_deref());
 
     let templates = state
         .store
@@ -85,24 +106,34 @@ pub async fn index(
         .replace("{{TOPBAR}}", &topbar("Log search", &email))
         .replace("{{STAT_LOGS}}", &fmt_count(total_logs))
         .replace("{{STAT_TEMPLATES}}", &fmt_count(total_templates))
-        .replace("{{STAT_RESULTS}}", &fmt_count(rows.len() as i64))
+        .replace("{{STAT_RESULTS}}", &fmt_count(page.rows.len() as i64))
         .replace("{{FILTER_BAR}}", &render_filter_bar(&qy))
         .replace("{{ACTIVE_FILTER}}", &active_filter)
-        .replace("{{ROWS}}", &render_rows(&rows))
+        .replace("{{ROWS}}", &render_rows(&page.rows))
+        .replace("{{PAGER}}", &render_pager(&qy, &page))
         .replace("{{TEMPLATES}}", &render_templates(&templates));
     Html(page).into_response()
 }
 
 /// `GET /api/search` — the same filter, as JSON, for programmatic callers.
-pub async fn api_search(
-    State(state): State<AppState>,
-    Query(qy): Query<SearchQuery>,
-) -> Response {
-    let filter = to_filter(&qy);
+pub async fn api_search(State(state): State<AppState>, Query(qy): Query<SearchQuery>) -> Response {
+    let page_limit = page_limit(&qy);
+    let filter = to_filter(&qy, fetch_limit(page_limit));
     match state.store.search(&filter).await {
         Ok(rows) => {
-            let rows = rank_by_overlap(rows, filter.q.as_deref());
-            Json(json!({ "count": rows.len(), "results": rows })).into_response()
+            let page = page_from_rows(rows, page_limit, filter.q.as_deref());
+            let next_cursor = page.next_cursor.clone();
+            let next = next_cursor
+                .as_ref()
+                .map(|cursor| format!("/api/search?{}", build_query_string(&qy, Some(cursor))));
+            Json(json!({
+                "count": page.rows.len(),
+                "limit": page_limit,
+                "next_cursor": next_cursor,
+                "next": next,
+                "results": page.rows,
+            }))
+            .into_response()
         }
         Err(e) => crate::error::AppError::from(e).into_json(),
     }
@@ -113,18 +144,44 @@ pub async fn api_search(
 // ---------------------------------------------------------------------------
 
 /// Translate the raw query string into a [`SearchFilter`], clamping the row limit.
-fn to_filter(qy: &SearchQuery) -> SearchFilter {
+fn to_filter(qy: &SearchQuery, limit: usize) -> SearchFilter {
     SearchFilter {
         q: nonempty(&qy.q),
+        host: effective_host(qy),
         app: nonempty(&qy.app),
         severity: nonempty(&qy.severity),
         template_id: nonempty(&qy.template_id),
         since: qy.since.trim().parse::<i64>().ok(),
         until: qy.until.trim().parse::<i64>().ok(),
-        limit: qy
-            .limit
-            .unwrap_or(DEFAULT_PAGE_LIMIT)
-            .clamp(1, SEARCH_LIMIT),
+        before_ts: qy.before_ts,
+        before_id: nonempty(&qy.before_id),
+        limit: limit.clamp(1, SEARCH_LIMIT),
+    }
+}
+
+fn page_limit(qy: &SearchQuery) -> usize {
+    qy.limit
+        .unwrap_or(DEFAULT_PAGE_LIMIT)
+        .clamp(1, SEARCH_LIMIT)
+}
+
+fn fetch_limit(page_limit: usize) -> usize {
+    page_limit.saturating_add(1).min(SEARCH_LIMIT)
+}
+
+fn page_from_rows(mut rows: Vec<LogEntry>, page_limit: usize, q: Option<&str>) -> SearchPage {
+    let page_limit = page_limit.clamp(1, SEARCH_LIMIT);
+    let next_cursor = if rows.len() > page_limit {
+        rows.get(page_limit - 1).map(SearchCursor::from)
+    } else {
+        None
+    };
+    if rows.len() > page_limit {
+        rows.truncate(page_limit);
+    }
+    SearchPage {
+        rows: rank_by_overlap(rows, q),
+        next_cursor,
     }
 }
 
@@ -176,17 +233,38 @@ fn nonempty(s: &str) -> Option<String> {
     }
 }
 
+fn effective_host(qy: &SearchQuery) -> Option<String> {
+    nonempty(&qy.host).or_else(|| nonempty(&qy.source))
+}
+
+impl From<&LogEntry> for SearchCursor {
+    fn from(log: &LogEntry) -> Self {
+        SearchCursor {
+            before_ts: log.ts,
+            before_id: log.id.clone(),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Rendering
 // ---------------------------------------------------------------------------
 
 /// Render the GET filter bar, preserving the current values (severity select keeps its choice).
 fn render_filter_bar(qy: &SearchQuery) -> String {
-    let severities = ["", "emerg", "alert", "crit", "err", "warning", "notice", "info", "debug"];
+    let severities = [
+        "", "emerg", "alert", "crit", "err", "warning", "notice", "info", "debug",
+    ];
+    let host = effective_host(qy).unwrap_or_default();
+    let limit = qy.limit.map(|n| n.to_string()).unwrap_or_default();
     let mut options = String::new();
     for s in severities {
         let label = if s.is_empty() { "all severities" } else { s };
-        let selected = if s == qy.severity.trim() { " selected" } else { "" };
+        let selected = if s == qy.severity.trim() {
+            " selected"
+        } else {
+            ""
+        };
         options.push_str(&format!(
             r#"<option value="{val}"{sel}>{label}</option>"#,
             val = esc(s),
@@ -197,21 +275,50 @@ fn render_filter_bar(qy: &SearchQuery) -> String {
     format!(
         r#"<form class="filter-bar" method="get" action="/">
   <input class="filter-bar__text" type="text" name="q" value="{q}" placeholder="search messages…" aria-label="search text">
+  <input class="filter-bar__source" type="text" name="host" value="{host}" placeholder="source host" aria-label="source host">
   <input class="filter-bar__app" type="text" name="app" value="{app}" placeholder="app" aria-label="app">
   <select class="filter-bar__sev" name="severity" aria-label="severity">{options}</select>
   <input class="filter-bar__time" type="text" name="since" value="{since}" placeholder="since (epoch s)" aria-label="since">
   <input class="filter-bar__time" type="text" name="until" value="{until}" placeholder="until (epoch s)" aria-label="until">
+  <input class="filter-bar__limit" type="text" name="limit" value="{limit}" placeholder="limit" aria-label="limit" inputmode="numeric">
   <input type="hidden" name="template_id" value="{tid}">
   <button class="btn btn-primary" type="submit">Search</button>
   <a class="btn btn-ghost" href="/">Reset</a>
 </form>"#,
         q = esc(qy.q.trim()),
+        host = esc(&host),
         app = esc(qy.app.trim()),
         options = options,
         since = esc(qy.since.trim()),
         until = esc(qy.until.trim()),
+        limit = esc(&limit),
         tid = esc(qy.template_id.trim()),
     )
+}
+
+fn render_pager(qy: &SearchQuery, page: &SearchPage) -> String {
+    if page.rows.is_empty() {
+        return String::new();
+    }
+    let label = format!(
+        "Showing {} log{}",
+        page.rows.len(),
+        if page.rows.len() == 1 { "" } else { "s" },
+    );
+    match &page.next_cursor {
+        Some(cursor) => {
+            let href = format!("/?{}", build_query_string(qy, Some(cursor)));
+            format!(
+                r#"<div class="pager"><span class="pager__meta">{label}</span><a class="btn btn-ghost btn-sm" href="{href}">Next page</a></div>"#,
+                label = esc(&label),
+                href = esc(&href),
+            )
+        }
+        None => format!(
+            r#"<div class="pager"><span class="pager__meta">{label} · end of results</span></div>"#,
+            label = esc(&label),
+        ),
+    }
 }
 
 /// Render the log table body rows. Empty result -> a friendly empty state spanning the table.
@@ -289,9 +396,68 @@ fn truncate(s: &str, n: usize) -> String {
     }
 }
 
+fn build_query_string(qy: &SearchQuery, cursor: Option<&SearchCursor>) -> String {
+    let mut pairs: Vec<(&str, String)> = Vec::new();
+    push_nonempty(&mut pairs, "q", &qy.q);
+    if let Some(host) = effective_host(qy) {
+        pairs.push(("host", host));
+    }
+    push_nonempty(&mut pairs, "app", &qy.app);
+    push_nonempty(&mut pairs, "severity", &qy.severity);
+    push_nonempty(&mut pairs, "template_id", &qy.template_id);
+    push_nonempty(&mut pairs, "since", &qy.since);
+    push_nonempty(&mut pairs, "until", &qy.until);
+    if let Some(limit) = qy.limit {
+        pairs.push(("limit", limit.to_string()));
+    }
+    if let Some(cursor) = cursor {
+        pairs.push(("before_ts", cursor.before_ts.to_string()));
+        pairs.push(("before_id", cursor.before_id.clone()));
+    }
+    pairs
+        .into_iter()
+        .map(|(k, v)| format!("{}={}", k, percent_encode(&v)))
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
+fn push_nonempty(pairs: &mut Vec<(&'static str, String)>, key: &'static str, value: &str) {
+    if let Some(value) = nonempty(value) {
+        pairs.push((key, value));
+    }
+}
+
+fn percent_encode(value: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut out = String::with_capacity(value.len());
+    for b in value.as_bytes() {
+        let unreserved = b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~');
+        if unreserved {
+            out.push(*b as char);
+        } else {
+            out.push('%');
+            out.push(HEX[(b >> 4) as usize] as char);
+            out.push(HEX[(b & 0x0f) as usize] as char);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn log(id: &str, ts: i64, host: &str, msg: &str) -> LogEntry {
+        LogEntry {
+            id: id.to_string(),
+            ts,
+            host: host.to_string(),
+            app: "web".to_string(),
+            severity: "info".to_string(),
+            message: msg.to_string(),
+            template_id: "t".to_string(),
+        }
+    }
 
     #[test]
     fn keywords_are_distinct_and_filtered() {
@@ -313,5 +479,45 @@ mod tests {
         assert_eq!(fmt_count(42), "42");
         assert_eq!(fmt_count(12408), "12,408");
         assert_eq!(fmt_count(1000000), "1,000,000");
+    }
+
+    #[test]
+    fn page_cursor_uses_unranked_keyset_boundary() {
+        let rows = vec![
+            log("c", 300, "h1", "ordinary line"),
+            log("b", 200, "h1", "database timeout"),
+            log("a", 100, "h1", "database timeout"),
+        ];
+        let page = page_from_rows(rows, 2, Some("database"));
+
+        assert_eq!(page.next_cursor.unwrap().before_id, "b");
+        assert_eq!(
+            page.rows.iter().map(|l| l.id.as_str()).collect::<Vec<_>>(),
+            ["b", "c"]
+        );
+    }
+
+    #[test]
+    fn query_string_preserves_filters_and_encodes_values() {
+        let qy = SearchQuery {
+            q: "db timeout".to_string(),
+            source: "edge/1".to_string(),
+            app: "api".to_string(),
+            severity: "err".to_string(),
+            limit: Some(25),
+            ..Default::default()
+        };
+        let qs = build_query_string(
+            &qy,
+            Some(&SearchCursor {
+                before_ts: 200,
+                before_id: "log_1".to_string(),
+            }),
+        );
+
+        assert!(qs.contains("q=db%20timeout"));
+        assert!(qs.contains("host=edge%2F1"));
+        assert!(qs.contains("before_ts=200"));
+        assert!(qs.contains("before_id=log_1"));
     }
 }

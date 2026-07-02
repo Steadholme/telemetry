@@ -7,16 +7,34 @@ use axum::http::{header, Request, StatusCode};
 use tower::ServiceExt;
 
 use sift::build_dev_state;
+use sift::store::LogEntry;
 
 fn body_to_string(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).to_string()
+}
+
+fn log(id: &str, ts: i64, host: &str, app: &str, severity: &str, message: &str) -> LogEntry {
+    LogEntry {
+        id: id.to_string(),
+        ts,
+        host: host.to_string(),
+        app: app.to_string(),
+        severity: severity.to_string(),
+        message: message.to_string(),
+        template_id: "t_test".to_string(),
+    }
 }
 
 #[tokio::test]
 async fn healthz_is_public_ok() {
     let app = sift::app(build_dev_state());
     let res = app
-        .oneshot(Request::builder().uri("/healthz").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/healthz")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::OK);
@@ -82,10 +100,70 @@ async fn ingest_then_search_roundtrip() {
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::OK);
-    let bytes = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+    let bytes = axum::body::to_bytes(res.into_body(), 1 << 20)
+        .await
+        .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(json["count"], 2);
-    assert!(json["results"][0]["message"].as_str().unwrap().contains("timeout"));
+    assert!(json["results"][0]["message"]
+        .as_str()
+        .unwrap()
+        .contains("timeout"));
+}
+
+#[tokio::test]
+async fn api_search_supports_source_filter_and_keyset_next_link() {
+    let state = build_dev_state();
+    state
+        .store
+        .insert_log(&log("a", 100, "edge-b", "api", "info", "other host"))
+        .await
+        .unwrap();
+    state
+        .store
+        .insert_log(&log("b", 200, "edge-a", "api", "info", "second edge event"))
+        .await
+        .unwrap();
+    state
+        .store
+        .insert_log(&log("c", 300, "edge-a", "api", "err", "first edge event"))
+        .await
+        .unwrap();
+
+    let app = sift::app(state.clone());
+    let res = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/search?source=edge-a&limit=1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(res.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["count"], 1);
+    assert_eq!(json["results"][0]["id"], "c");
+    assert_eq!(json["next_cursor"]["before_ts"], 300);
+    assert_eq!(json["next_cursor"]["before_id"], "c");
+
+    let next = json["next"].as_str().unwrap();
+    let app = sift::app(state.clone());
+    let res = app
+        .oneshot(Request::builder().uri(next).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(res.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["count"], 1);
+    assert_eq!(json["results"][0]["id"], "b");
+    assert!(json["next_cursor"].is_null());
 }
 
 #[tokio::test]
@@ -96,7 +174,9 @@ async fn dashboard_renders_html() {
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::OK);
-    let bytes = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+    let bytes = axum::body::to_bytes(res.into_body(), 1 << 20)
+        .await
+        .unwrap();
     let html = body_to_string(&bytes);
     assert!(html.contains("HOLDFAST"));
     assert!(html.contains("Top templates"));

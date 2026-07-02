@@ -50,12 +50,17 @@ pub struct Template {
 pub struct SearchFilter {
     /// Case-insensitive substring match on `message` (the `LIKE` half of the search).
     pub q: Option<String>,
+    /// Exact source-host match. The dashboard also accepts `source=` as an alias for this field.
+    pub host: Option<String>,
     pub app: Option<String>,
     pub severity: Option<String>,
     pub template_id: Option<String>,
     /// Inclusive lower/upper bounds on `ts` (epoch seconds).
     pub since: Option<i64>,
     pub until: Option<i64>,
+    /// Strict keyset cursor for newest-first pages: return rows older than `(before_ts, before_id)`.
+    pub before_ts: Option<i64>,
+    pub before_id: Option<String>,
     /// Row cap (clamped to [`SEARCH_LIMIT`] by the caller).
     pub limit: usize,
 }
@@ -115,7 +120,10 @@ impl Store for InMemoryStore {
     // The std `Mutex` is fine throughout: each critical section is fully synchronous (no `.await`
     // inside), so a guard is never held across a yield point.
     async fn insert_log(&self, log: &LogEntry) -> Result<(), StoreError> {
-        self.logs.lock().expect("logs lock poisoned").push(log.clone());
+        self.logs
+            .lock()
+            .expect("logs lock poisoned")
+            .push(log.clone());
         Ok(())
     }
 
@@ -151,7 +159,11 @@ impl Store for InMemoryStore {
     async fn top_templates(&self, limit: usize) -> Result<Vec<Template>, StoreError> {
         let templates = self.templates.lock().expect("templates lock poisoned");
         let mut v: Vec<Template> = templates.clone();
-        v.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| b.last_seen.cmp(&a.last_seen)));
+        v.sort_by(|a, b| {
+            b.count
+                .cmp(&a.count)
+                .then_with(|| b.last_seen.cmp(&a.last_seen))
+        });
         v.truncate(limit);
         Ok(v)
     }
@@ -171,7 +183,11 @@ impl Store for InMemoryStore {
     }
 
     async fn count_templates(&self) -> Result<i64, StoreError> {
-        Ok(self.templates.lock().expect("templates lock poisoned").len() as i64)
+        Ok(self
+            .templates
+            .lock()
+            .expect("templates lock poisoned")
+            .len() as i64)
     }
 }
 
@@ -179,6 +195,11 @@ impl Store for InMemoryStore {
 fn match_filter(log: &LogEntry, f: &SearchFilter, q_lower: Option<&str>) -> bool {
     if let Some(q) = q_lower {
         if !log.message.to_lowercase().contains(q) {
+            return false;
+        }
+    }
+    if let Some(host) = &f.host {
+        if &log.host != host {
             return false;
         }
     }
@@ -204,6 +225,11 @@ fn match_filter(log: &LogEntry, f: &SearchFilter, q_lower: Option<&str>) -> bool
     }
     if let Some(until) = f.until {
         if log.ts > until {
+            return false;
+        }
+    }
+    if let (Some(before_ts), Some(before_id)) = (f.before_ts, f.before_id.as_ref()) {
+        if !(log.ts < before_ts || (log.ts == before_ts && log.id.as_str() < before_id.as_str())) {
             return false;
         }
     }
@@ -276,6 +302,12 @@ impl PgStore {
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_logs_ts ON logs (ts)")
             .execute(&self.pool)
             .await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_logs_keyset ON logs (ts, id)")
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_logs_host ON logs (host)")
+            .execute(&self.pool)
+            .await?;
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_logs_app ON logs (app)")
             .execute(&self.pool)
             .await?;
@@ -333,13 +365,11 @@ impl PgStore {
             .fetch_optional(&self.pool)
             .await?;
         if existing.is_some() {
-            sqlx::query(
-                "UPDATE templates SET count = count + 1, last_seen = $1 WHERE id = $2",
-            )
-            .bind(t.last_seen)
-            .bind(&t.id)
-            .execute(&self.pool)
-            .await?;
+            sqlx::query("UPDATE templates SET count = count + 1, last_seen = $1 WHERE id = $2")
+                .bind(t.last_seen)
+                .bind(&t.id)
+                .execute(&self.pool)
+                .await?;
             Ok(false)
         } else {
             sqlx::query(
@@ -364,6 +394,9 @@ impl PgStore {
         let mut qb: QueryBuilder<sqlx::Postgres> = QueryBuilder::new(
             "SELECT id, ts, host, app, severity, message, template_id FROM logs WHERE 1 = 1",
         );
+        if let Some(host) = &f.host {
+            qb.push(" AND host = ").push_bind(host);
+        }
         if let Some(app) = &f.app {
             qb.push(" AND app = ").push_bind(app);
         }
@@ -382,6 +415,15 @@ impl PgStore {
         if let Some(q) = &f.q {
             let like = format!("%{}%", q.to_lowercase());
             qb.push(" AND LOWER(message) LIKE ").push_bind(like);
+        }
+        if let (Some(before_ts), Some(before_id)) = (f.before_ts, f.before_id.as_ref()) {
+            qb.push(" AND (ts < ")
+                .push_bind(before_ts)
+                .push(" OR (ts = ")
+                .push_bind(before_ts)
+                .push(" AND id < ")
+                .push_bind(before_id)
+                .push("))");
         }
         qb.push(" ORDER BY ts DESC, id DESC LIMIT ")
             .push_bind(f.limit.min(SEARCH_LIMIT) as i64);
@@ -493,7 +535,10 @@ mod tests {
             first_seen: 10,
             last_seen: 10,
         };
-        assert!(s.upsert_template(&t).await.unwrap(), "first sighting is new");
+        assert!(
+            s.upsert_template(&t).await.unwrap(),
+            "first sighting is new"
+        );
         assert!(!s.upsert_template(&t).await.unwrap(), "second is not new");
         let top = s.top_templates(10).await.unwrap();
         assert_eq!(top.len(), 1);
@@ -503,24 +548,93 @@ mod tests {
     #[tokio::test]
     async fn search_filters_and_orders_newest_first() {
         let s = InMemoryStore::new();
-        s.insert_log(&log("a", 100, "web", "info", "user login ok", "t_a")).await.unwrap();
-        s.insert_log(&log("b", 200, "web", "error", "DB timeout", "t_b")).await.unwrap();
-        s.insert_log(&log("c", 150, "api", "info", "login retry", "t_a")).await.unwrap();
+        s.insert_log(&log("a", 100, "web", "info", "user login ok", "t_a"))
+            .await
+            .unwrap();
+        s.insert_log(&log("b", 200, "web", "error", "DB timeout", "t_b"))
+            .await
+            .unwrap();
+        s.insert_log(&log("c", 150, "api", "info", "login retry", "t_a"))
+            .await
+            .unwrap();
 
-        let f = SearchFilter { q: Some("login".to_string()), limit: 50, ..Default::default() };
+        let f = SearchFilter {
+            q: Some("login".to_string()),
+            limit: 50,
+            ..Default::default()
+        };
         let hits = s.search(&f).await.unwrap();
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].id, "c", "newest-first within the LIKE match");
 
-        let f = SearchFilter { app: Some("web".to_string()), limit: 50, ..Default::default() };
+        let f = SearchFilter {
+            app: Some("web".to_string()),
+            limit: 50,
+            ..Default::default()
+        };
         assert_eq!(s.search(&f).await.unwrap().len(), 2);
 
-        let f = SearchFilter { template_id: Some("t_a".to_string()), limit: 50, ..Default::default() };
+        let f = SearchFilter {
+            host: Some("h".to_string()),
+            limit: 50,
+            ..Default::default()
+        };
+        assert_eq!(s.search(&f).await.unwrap().len(), 3);
+
+        let f = SearchFilter {
+            template_id: Some("t_a".to_string()),
+            limit: 50,
+            ..Default::default()
+        };
         assert_eq!(s.search(&f).await.unwrap().len(), 2);
 
-        let f = SearchFilter { since: Some(150), until: Some(150), limit: 50, ..Default::default() };
+        let f = SearchFilter {
+            since: Some(150),
+            until: Some(150),
+            limit: 50,
+            ..Default::default()
+        };
         let hits = s.search(&f).await.unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].id, "c");
+    }
+
+    #[tokio::test]
+    async fn search_keyset_pages_after_ts_and_id() {
+        let s = InMemoryStore::new();
+        s.insert_log(&log("a", 100, "web", "info", "oldest", "t_a"))
+            .await
+            .unwrap();
+        s.insert_log(&log("b", 200, "web", "info", "middle", "t_b"))
+            .await
+            .unwrap();
+        s.insert_log(&log("c", 300, "web", "info", "newest", "t_c"))
+            .await
+            .unwrap();
+        s.insert_log(&log("d", 200, "web", "info", "same-second newer id", "t_d"))
+            .await
+            .unwrap();
+
+        let f = SearchFilter {
+            limit: 3,
+            ..Default::default()
+        };
+        let first = s.search(&f).await.unwrap();
+        assert_eq!(
+            first.iter().map(|l| l.id.as_str()).collect::<Vec<_>>(),
+            ["c", "d", "b"]
+        );
+
+        let f = SearchFilter {
+            before_ts: Some(200),
+            before_id: Some("b".to_string()),
+            limit: 3,
+            ..Default::default()
+        };
+        let next = s.search(&f).await.unwrap();
+        assert_eq!(
+            next.iter().map(|l| l.id.as_str()).collect::<Vec<_>>(),
+            ["a"]
+        );
     }
 }

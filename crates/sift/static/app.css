@@ -226,9 +226,11 @@ hr { border: none; border-top: 1px solid var(--border); margin: 20px 0; }
   outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px var(--ring);
 }
 .filter-bar__text { flex: 1 1 280px; min-width: 200px; }
+.filter-bar__source { flex: 0 1 150px; }
 .filter-bar__app { flex: 0 1 130px; }
 .filter-bar__sev { flex: 0 1 150px; }
 .filter-bar__time { flex: 0 1 140px; font-family: var(--mono); font-size: 12px; }
+.filter-bar__limit { flex: 0 1 86px; font-family: var(--mono); font-size: 12px; }
 
 /* active-template chip (soft accent tint, not a saturated fill) */
 .active-filter {
@@ -268,6 +270,11 @@ hr { border: none; border-top: 1px solid var(--border); margin: 20px 0; }
 .col-msg__tmpl { color: var(--ink-3); margin-right: 4px; opacity: .6; text-decoration: none; }
 .col-msg__tmpl:hover { opacity: 1; color: var(--accent-2); }
 .logtable__empty { padding: 40px 16px; text-align: center; color: var(--ink-3); font-family: var(--font); }
+.pager {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 12px 16px; border-top: 1px solid var(--border); background: var(--surface);
+}
+.pager__meta { color: var(--ink-3); font-size: 12.5px; font-weight: 500; }
 
 /* -------------------------------------------------------------- severity chips (soft tints) */
 .sev {
