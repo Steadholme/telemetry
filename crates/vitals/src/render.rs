@@ -5,13 +5,25 @@
 //! self-contained document. The brand lockup, tokens, app-bar, cards, status pills and
 //! tables match the shared HOLDFAST enterprise design.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::OnceLock};
 
 use crate::analytics;
 use crate::metrics::{self, SampleRow};
 use crate::store::Anomaly;
 
-const APP_CSS: &str = include_str!("../static/app.css");
+const SERVICE_CSS: &str = include_str!("../static/service.css");
+static APP_CSS: OnceLock<String> = OnceLock::new();
+
+/// Full CSS payload: canonical Odyssey first, Vitals' service layer second.
+pub fn app_css() -> &'static str {
+    APP_CSS.get_or_init(|| {
+        let mut css = String::with_capacity(odyssey::APP_CSS.len() + SERVICE_CSS.len() + 1);
+        css.push_str(odyssey::APP_CSS);
+        css.push('\n');
+        css.push_str(SERVICE_CSS);
+        css
+    })
+}
 
 /// Everything the dashboard shows for one host.
 #[derive(Clone, Debug, Default)]
@@ -123,11 +135,11 @@ pub fn render(hosts: &[HostView], anomalies: &[Anomaly], email: &str, now: i64) 
     </div>
   </div>
   {anomaly_panel}
-  <div class="grid">{cards}</div>
+  <div class="vitals-grid">{cards}</div>
 </main>
 </body>
 </html>"#,
-        css = APP_CSS,
+        css = app_css(),
         shield = SHIELD_SVG,
         userbox = userbox(email),
         online = online,
@@ -165,7 +177,7 @@ fn anomalies_panel(anomalies: &[Anomaly], now: i64) -> String {
         })
         .collect();
     format!(
-        r#"<section class="card">
+        r#"<section class="card anomaly-card">
   <div class="card__head">
     <h2>异常监测 · Anomaly Watch</h2>
     <span class="pill pill--warn">{n} 异常</span>
@@ -266,7 +278,7 @@ fn host_card(h: &HostView, now: i64) -> String {
         .unwrap_or_else(|| "—".to_string());
 
     format!(
-        r#"<section class="card">
+        r#"<section class="card vitals-card">
   <div class="card__head">
     <h2 title="{host_attr}">{host}</h2>
     <span class="pill {pill_class}">{pill_text}</span>
@@ -386,7 +398,7 @@ fn sparkline(values: &[f64], forecast: &[f64], max: f64, stroke: &str) -> String
 }
 
 fn empty_state() -> String {
-    r#"<section class="card card--empty">
+    r#"<section class="card vitals-card vitals-card--empty">
   <h2>暂无数据</h2>
   <p class="muted">尚未收到任何探针上报。确认 vitals-agent 正在运行并指向本服务的 /ingest。</p>
 </section>"#

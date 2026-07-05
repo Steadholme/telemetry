@@ -16,6 +16,7 @@ path = "src/main.rs"
 [dependencies]
 # HTTP framework (shared with keystone/inkwell/cellar): Query/State extractors, typed responses.
 axum = "0.8"
+odyssey = { path = "../odyssey" }
 # Async runtime. We run the HTTP server AND the syslog UDP/TCP listeners concurrently on one
 # runtime via `tokio::join!`, so we need `net` (UdpSocket/TcpListener), `io-util` (line reads),
 # and `time` (per-POST audit timeout). The Store trait is async: handlers `.await` it directly

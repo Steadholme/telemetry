@@ -15,7 +15,7 @@ use serde_json::json;
 
 use crate::auth;
 use crate::config::{DEFAULT_PAGE_LIMIT, SEARCH_LIMIT, TEMPLATE_PANEL_LIMIT};
-use crate::handlers::{esc, fmt_datetime, severity_class, topbar, APP_CSS};
+use crate::handlers::{app_css, esc, fmt_datetime, severity_class, topbar};
 use crate::store::{LogEntry, SearchFilter};
 use crate::AppState;
 
@@ -102,7 +102,7 @@ pub async fn index(
     };
 
     let page = DASHBOARD_HTML
-        .replace("{{CSS}}", APP_CSS)
+        .replace("{{CSS}}", app_css())
         .replace("{{TOPBAR}}", &topbar("Log search", &email))
         .replace("{{STAT_LOGS}}", &fmt_count(total_logs))
         .replace("{{STAT_TEMPLATES}}", &fmt_count(total_templates))
@@ -309,13 +309,13 @@ fn render_pager(qy: &SearchQuery, page: &SearchPage) -> String {
         Some(cursor) => {
             let href = format!("/?{}", build_query_string(qy, Some(cursor)));
             format!(
-                r#"<div class="pager"><span class="pager__meta">{label}</span><a class="btn btn-ghost btn-sm" href="{href}">Next page</a></div>"#,
+                r#"<div class="sift-pager"><span class="sift-pager__meta">{label}</span><a class="btn btn-ghost btn-sm" href="{href}">Next page</a></div>"#,
                 label = esc(&label),
                 href = esc(&href),
             )
         }
         None => format!(
-            r#"<div class="pager"><span class="pager__meta">{label} · end of results</span></div>"#,
+            r#"<div class="sift-pager"><span class="sift-pager__meta">{label} · end of results</span></div>"#,
             label = esc(&label),
         ),
     }

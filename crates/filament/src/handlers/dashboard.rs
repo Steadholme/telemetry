@@ -14,7 +14,7 @@ use serde::Deserialize;
 
 use crate::auth;
 use crate::error::AppError;
-use crate::handlers::{esc, fmt_duration, fmt_when, service_hue, topbar, APP_CSS};
+use crate::handlers::{app_css, esc, fmt_duration, fmt_when, service_hue, topbar};
 use crate::trace::{build_waterfall, summarize, TraceSummary};
 use crate::AppState;
 
@@ -82,7 +82,7 @@ pub async fn index(
     };
 
     let body = TRACES_HTML
-        .replace("{{CSS}}", APP_CSS)
+        .replace("{{CSS}}", app_css())
         .replace("{{TOPBAR}}", &topbar("Traces", &email))
         .replace("{{FILTERS}}", &render_filters(&q))
         .replace("{{SUMMARY}}", &esc(&summary))
@@ -127,7 +127,7 @@ pub async fn waterfall(
     let legend = render_legend(&spans);
 
     let body = WATERFALL_HTML
-        .replace("{{CSS}}", APP_CSS)
+        .replace("{{CSS}}", app_css())
         .replace("{{TOPBAR}}", &topbar("Waterfall", &email))
         .replace("{{TRACE_ID}}", &esc(&trace_id))
         .replace("{{META}}", &esc(&meta))
