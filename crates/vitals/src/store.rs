@@ -8,7 +8,7 @@
 //! JSONB) and runtime queries (no compile-time macros), so the build needs NO database and
 //! the same statements later run unchanged on FusionDB over pgwire.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Mutex;
 
 use async_trait::async_trait;
@@ -29,6 +29,19 @@ pub struct Anomaly {
     /// Signed z-score of `value` against the preceding window's baseline.
     pub score: f64,
     pub note: String,
+}
+
+/// Downsampled bucket for a `(host, metric)` series. `bucket` is the zero-based bucket number
+/// anchored at the caller's `since`; wall-clock time is `since + bucket * step`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Bucket {
+    pub host: String,
+    pub metric: String,
+    pub bucket: i64,
+    pub avg: f64,
+    pub max: f64,
+    pub min: f64,
+    pub n: i64,
 }
 
 impl Anomaly {
@@ -57,6 +70,17 @@ pub trait Store: Send + Sync {
     /// - `host`/`metric` `None` means "any";
     /// - `since` is an inclusive lower bound on `ts`.
     async fn query(&self, host: Option<&str>, metric: Option<&str>, since: i64) -> Vec<SampleRow>;
+
+    /// Aggregate rows into since-anchored integer buckets over an inclusive `[since, until]`.
+    /// Empty buckets are absent so charts can render honest gaps.
+    async fn series_buckets(
+        &self,
+        host: Option<&str>,
+        metric: Option<&str>,
+        since: i64,
+        until: i64,
+        step: i64,
+    ) -> Vec<Bucket>;
 
     /// The most-recent sample for every `(host, metric)` pair (the dashboard's gauges).
     async fn latest(&self) -> Vec<SampleRow>;
@@ -140,6 +164,62 @@ impl Store for InMemoryStore {
                 .then(a.ts.cmp(&b.ts))
         });
         out
+    }
+
+    async fn series_buckets(
+        &self,
+        host: Option<&str>,
+        metric: Option<&str>,
+        since: i64,
+        until: i64,
+        step: i64,
+    ) -> Vec<Bucket> {
+        if until < since {
+            return Vec::new();
+        }
+        let step = step.max(1);
+        #[derive(Clone, Debug)]
+        struct Agg {
+            sum: f64,
+            min: f64,
+            max: f64,
+            n: i64,
+        }
+
+        let rows = self.rows.lock().expect("rows lock poisoned");
+        let mut groups: BTreeMap<(String, String, i64), Agg> = BTreeMap::new();
+        for r in rows
+            .iter()
+            .filter(|r| host.is_none_or(|h| r.host == h))
+            .filter(|r| metric.is_none_or(|m| r.metric == m))
+            .filter(|r| r.ts >= since && r.ts <= until)
+        {
+            let bucket = (r.ts - since) / step;
+            let entry = groups
+                .entry((r.host.clone(), r.metric.clone(), bucket))
+                .or_insert(Agg {
+                    sum: 0.0,
+                    min: r.value,
+                    max: r.value,
+                    n: 0,
+                });
+            entry.sum += r.value;
+            entry.min = entry.min.min(r.value);
+            entry.max = entry.max.max(r.value);
+            entry.n += 1;
+        }
+        groups
+            .into_iter()
+            .map(|((host, metric, bucket), agg)| Bucket {
+                host,
+                metric,
+                bucket,
+                avg: agg.sum / agg.n as f64,
+                max: agg.max,
+                min: agg.min,
+                n: agg.n,
+            })
+            .collect()
     }
 
     async fn latest(&self) -> Vec<SampleRow> {
@@ -345,6 +425,48 @@ impl PgStore {
         Ok(rows.iter().map(Self::row_from).collect())
     }
 
+    async fn series_buckets_async(
+        &self,
+        host: Option<&str>,
+        metric: Option<&str>,
+        since: i64,
+        until: i64,
+        step: i64,
+    ) -> Result<Vec<Bucket>, sqlx::Error> {
+        if until < since {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query(
+            "SELECT host, metric, ((ts-$3)/$5) AS b, AVG(value), MAX(value), MIN(value), COUNT(*) \
+             FROM metric_samples \
+             WHERE ($1 IS NULL OR host=$1) \
+               AND ($2 IS NULL OR metric=$2) \
+               AND ts>=$3 \
+               AND ts<=$4 \
+             GROUP BY host, metric, ((ts-$3)/$5) \
+             ORDER BY host, metric, b",
+        )
+        .bind(host)
+        .bind(metric)
+        .bind(since)
+        .bind(until)
+        .bind(step.max(1))
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .iter()
+            .map(|row| Bucket {
+                host: row.get(0),
+                metric: row.get(1),
+                bucket: row.get(2),
+                avg: row.get(3),
+                max: row.get(4),
+                min: row.get(5),
+                n: row.get(6),
+            })
+            .collect())
+    }
+
     async fn latest_async(&self) -> Result<Vec<SampleRow>, sqlx::Error> {
         // Portable "latest row per group": join the base table to (host, metric, MAX(ts)).
         // Avoids Postgres-only `DISTINCT ON` so the statement also runs on FusionDB.
@@ -465,6 +587,22 @@ impl Store for PgStore {
             })
     }
 
+    async fn series_buckets(
+        &self,
+        host: Option<&str>,
+        metric: Option<&str>,
+        since: i64,
+        until: i64,
+        step: i64,
+    ) -> Vec<Bucket> {
+        self.series_buckets_async(host, metric, since, until, step)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::error!(error = %e, "pg series_buckets failed");
+                Vec::new()
+            })
+    }
+
     async fn latest(&self) -> Vec<SampleRow> {
         self.latest_async().await.unwrap_or_else(|e| {
             tracing::error!(error = %e, "pg latest failed");
@@ -489,10 +627,12 @@ impl Store for PgStore {
     }
 
     async fn record_anomaly(&self, anomaly: &Anomaly) -> bool {
-        self.record_anomaly_async(anomaly).await.unwrap_or_else(|e| {
-            tracing::error!(error = %e, "pg record_anomaly failed");
-            false
-        })
+        self.record_anomaly_async(anomaly)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::error!(error = %e, "pg record_anomaly failed");
+                false
+            })
     }
 
     async fn recent_anomalies(
@@ -522,10 +662,14 @@ mod tests {
     async fn recent_samples_is_ascending_tail_per_pair() {
         let store = InMemoryStore::new();
         for ts in 0..10i64 {
-            store.insert_samples("box", &[s("cpu_pct", ts as f64, ts)]).await;
+            store
+                .insert_samples("box", &[s("cpu_pct", ts as f64, ts)])
+                .await;
         }
         // A different host/metric must not leak into the window.
-        store.insert_samples("other", &[s("cpu_pct", 99.0, 5)]).await;
+        store
+            .insert_samples("other", &[s("cpu_pct", 99.0, 5)])
+            .await;
         store.insert_samples("box", &[s("mem_pct", 99.0, 5)]).await;
 
         let w = store.recent_samples("box", "cpu_pct", 3).await;
@@ -538,23 +682,97 @@ mod tests {
         let store = InMemoryStore::new();
         assert!(
             store
-                .record_anomaly(&Anomaly::new("box", "cpu_pct", 100, 99.0, 5.0, "z=5".into()))
+                .record_anomaly(&Anomaly::new(
+                    "box",
+                    "cpu_pct",
+                    100,
+                    99.0,
+                    5.0,
+                    "z=5".into()
+                ))
                 .await
         );
         // Same (host, metric, ts) -> no second row (first write wins).
         assert!(
             !store
-                .record_anomaly(&Anomaly::new("box", "cpu_pct", 100, 99.0, 6.0, "z=6".into()))
+                .record_anomaly(&Anomaly::new(
+                    "box",
+                    "cpu_pct",
+                    100,
+                    99.0,
+                    6.0,
+                    "z=6".into()
+                ))
                 .await
         );
         store
-            .record_anomaly(&Anomaly::new("box", "mem_pct", 200, 80.0, 4.0, "z=4".into()))
+            .record_anomaly(&Anomaly::new(
+                "box",
+                "mem_pct",
+                200,
+                80.0,
+                4.0,
+                "z=4".into(),
+            ))
             .await;
 
-        assert_eq!(store.recent_anomalies(Some("box"), Some("cpu_pct"), 10).await.len(), 1);
+        assert_eq!(
+            store
+                .recent_anomalies(Some("box"), Some("cpu_pct"), 10)
+                .await
+                .len(),
+            1
+        );
         assert_eq!(store.recent_anomalies(Some("box"), None, 10).await.len(), 2);
         assert_eq!(store.recent_anomalies(None, None, 10).await.len(), 2);
         // Newest-first across the series.
         assert_eq!(store.recent_anomalies(None, None, 10).await[0].ts, 200);
+    }
+
+    #[tokio::test]
+    async fn series_buckets_aggregates_and_leaves_empty_buckets_absent() {
+        let store = InMemoryStore::new();
+        store
+            .insert_samples(
+                "box",
+                &[
+                    s("cpu_pct", 10.0, 100),
+                    s("cpu_pct", 20.0, 105),
+                    s("cpu_pct", 50.0, 130),
+                    s("cpu_pct", 90.0, 140),
+                    s("mem_pct", 80.0, 105),
+                ],
+            )
+            .await;
+        store
+            .insert_samples("other", &[s("cpu_pct", 99.0, 105)])
+            .await;
+
+        let buckets = store
+            .series_buckets(Some("box"), Some("cpu_pct"), 100, 140, 10)
+            .await;
+        assert_eq!(
+            buckets.iter().map(|b| b.bucket).collect::<Vec<_>>(),
+            [0, 3, 4]
+        );
+
+        let first = &buckets[0];
+        assert_eq!(first.host, "box");
+        assert_eq!(first.metric, "cpu_pct");
+        assert_eq!(first.n, 2);
+        assert_eq!(first.min, 10.0);
+        assert_eq!(first.max, 20.0);
+        assert_eq!(first.avg, 15.0);
+
+        assert_eq!(buckets[2].bucket, 4, "ts == until is included");
+        assert_eq!(buckets[2].avg, 90.0);
+        assert!(
+            buckets.iter().all(|b| b.bucket != 1 && b.bucket != 2),
+            "empty buckets are absent so charts can show gaps"
+        );
+        assert!(store
+            .series_buckets(Some("missing"), None, 100, 140, 10)
+            .await
+            .is_empty());
     }
 }

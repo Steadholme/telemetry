@@ -15,6 +15,7 @@
 pub mod analytics;
 pub mod audit;
 pub mod auth;
+pub mod chart;
 pub mod config;
 pub mod detector;
 pub mod error;
@@ -96,7 +97,11 @@ pub async fn build_state_from_env() -> Result<AppState, String> {
             Arc::new(pg)
         }
         "memory" => Arc::new(InMemoryStore::new()),
-        other => return Err(format!("unknown VITALS_STORE={other} (use memory|postgres)")),
+        other => {
+            return Err(format!(
+                "unknown VITALS_STORE={other} (use memory|postgres)"
+            ))
+        }
     };
 
     // Non-blocking Watchtower audit emitter — enabled by AUDIT_ENABLED + WATCHTOWER_URL +

@@ -5,6 +5,8 @@
 //! unset/empty, so the in-memory dev server boots with NO configuration and NO database —
 //! the same discipline as keystone/keyward.
 
+use std::collections::BTreeMap;
+
 /// Default server listen address (all interfaces, port 8300).
 pub const DEFAULT_BIND_ADDR: &str = "0.0.0.0:8300";
 /// Dev/test default ingest bearer token. Production MUST override `INGEST_TOKEN`.
@@ -59,6 +61,8 @@ pub struct ServerConfig {
     pub klaxon_token: Option<String>,
     /// Optional recipient for anomaly notifications (`KLAXON_NOTIFY_EMAIL`). `None` => no notify.
     pub klaxon_email: Option<String>,
+    /// Optional render-only host labels (`VITALS_HOST_ALIASES`, `id=alias,id2=alias2`).
+    pub host_aliases: BTreeMap<String, String>,
 }
 
 impl ServerConfig {
@@ -76,6 +80,7 @@ impl ServerConfig {
             klaxon_url: None,
             klaxon_token: None,
             klaxon_email: None,
+            host_aliases: BTreeMap::new(),
         }
     }
 
@@ -103,18 +108,26 @@ impl ServerConfig {
         }
         if let Some(v) = env_nonempty("VITALS_Z").and_then(|v| v.parse::<f64>().ok()) {
             // A non-positive / non-finite threshold would flag everything; clamp to the default.
-            c.z_threshold = if v.is_finite() && v > 0.0 { v } else { DEFAULT_Z };
+            c.z_threshold = if v.is_finite() && v > 0.0 {
+                v
+            } else {
+                DEFAULT_Z
+            };
         }
         if let Some(v) = env_nonempty("VITALS_WINDOW").and_then(|v| v.parse::<usize>().ok()) {
             // Need at least a handful of points for meaningful statistics.
             c.window = v.max(8);
         }
-        if let Some(v) = env_nonempty("VITALS_FORECAST_STEPS").and_then(|v| v.parse::<usize>().ok()) {
+        if let Some(v) = env_nonempty("VITALS_FORECAST_STEPS").and_then(|v| v.parse::<usize>().ok())
+        {
             c.forecast_steps = v.clamp(1, 64);
         }
         c.klaxon_url = env_nonempty("KLAXON_URL");
         c.klaxon_token = env_nonempty("KLAXON_INGEST_TOKEN");
         c.klaxon_email = env_nonempty("KLAXON_NOTIFY_EMAIL");
+        if let Some(v) = env_nonempty("VITALS_HOST_ALIASES") {
+            c.host_aliases = parse_host_aliases(&v);
+        }
         c
     }
 
@@ -167,7 +180,8 @@ impl AgentConfig {
             host_proc,
             host_sys: env_nonempty("HOST_SYS").unwrap_or_else(|| DEFAULT_HOST_SYS.to_string()),
             host_root: env_nonempty("HOST_ROOT").unwrap_or_else(|| DEFAULT_HOST_ROOT.to_string()),
-            server_url: env_nonempty("SERVER_URL").unwrap_or_else(|| DEFAULT_SERVER_URL.to_string()),
+            server_url: env_nonempty("SERVER_URL")
+                .unwrap_or_else(|| DEFAULT_SERVER_URL.to_string()),
             ingest_token: env_nonempty("INGEST_TOKEN")
                 .unwrap_or_else(|| DEFAULT_INGEST_TOKEN.to_string()),
         }
@@ -204,5 +218,32 @@ fn env_nonempty(key: &str) -> Option<String> {
     match std::env::var(key) {
         Ok(v) if !v.is_empty() => Some(v),
         _ => None,
+    }
+}
+
+fn parse_host_aliases(raw: &str) -> BTreeMap<String, String> {
+    raw.split(',')
+        .filter_map(|pair| {
+            let (id, alias) = pair.split_once('=')?;
+            let id = id.trim();
+            let alias = alias.trim();
+            if id.is_empty() || alias.is_empty() {
+                None
+            } else {
+                Some((id.to_string(), alias.to_string()))
+            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn host_aliases_parse_nonempty_pairs() {
+        let aliases = super::parse_host_aliases("abc=Edge One, empty=, =nope,db = 数据库 ");
+        assert_eq!(aliases.get("abc").map(String::as_str), Some("Edge One"));
+        assert_eq!(aliases.get("db").map(String::as_str), Some("数据库"));
+        assert!(!aliases.contains_key("empty"));
+        assert!(!aliases.contains_key(""));
     }
 }

@@ -5,6 +5,10 @@ edition = "2021"
 description = "Telemetry — one deployable hosting the HOLDFAST observability surfaces (logs / traces) behind a Host-based vhost demux. Each surface keeps its own database, routes, subdomain and ingest token; this binary just composes the two library crates so the estate runs one container instead of two."
 license = "MIT OR Apache-2.0"
 
+[workspace]
+members = [".", "crates/filament", "crates/odyssey", "crates/sift", "crates/vitals"]
+resolver = "2"
+
 [[bin]]
 name = "telemetry"
 path = "src/main.rs"
