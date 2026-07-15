@@ -2,7 +2,7 @@
 name = "telemetry"
 version = "0.1.0"
 edition = "2021"
-description = "Telemetry — one deployable hosting the HOLDFAST observability surfaces (logs / traces) behind a Host-based vhost demux. Each surface keeps its own database, routes, subdomain and ingest token; this binary just composes the two library crates so the estate runs one container instead of two."
+description = "Telemetry — one deployable hosting the Steadholme observability surfaces (logs / traces) behind a Host-based vhost demux. Each surface keeps its own database, routes, subdomain and ingest token; this binary just composes the two library crates so the estate runs one container instead of two."
 license = "MIT OR Apache-2.0"
 
 [workspace]

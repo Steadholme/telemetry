@@ -3,7 +3,7 @@
 //! Pure functions: a `&[HostView]` + the signed-in email in, an HTML `String` out. The CSS
 //! is embedded (`include_str!`) so the slim image never misses an asset and the page is one
 //! self-contained document. The brand lockup, tokens, app-bar, cards, status pills and
-//! tables match the shared HOLDFAST enterprise design.
+//! tables match the shared Steadholme enterprise design.
 
 use std::{collections::BTreeMap, sync::OnceLock};
 
@@ -201,15 +201,15 @@ pub fn render(
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light">
-<title>Vitals · HOLDFAST</title>
+<title>Vitals · Steadholme</title>
 <style>{css}</style>
 </head>
 <body>
 <header class="topbar">
   <div class="topbar__inner">
-    <a class="brand" href="/" aria-label="HOLDFAST Vitals">
+    <a class="brand" href="/" aria-label="Steadholme Vitals">
       <span class="brand__glyph" aria-hidden="true">{shield}</span>
-      <span class="brand__word">HOLDFAST</span>
+      <span class="brand__word">Steadholme</span>
     </a>
     <div class="topbar__right">{userbox}</div>
   </div>
@@ -248,15 +248,15 @@ pub fn render_unknown_host(email: &str) -> String {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light">
-<title>Vitals · HOLDFAST</title>
+<title>Vitals · Steadholme</title>
 <style>{css}</style>
 </head>
 <body>
 <header class="topbar">
   <div class="topbar__inner">
-    <a class="brand" href="/" aria-label="HOLDFAST Vitals">
+    <a class="brand" href="/" aria-label="Steadholme Vitals">
       <span class="brand__glyph" aria-hidden="true">{shield}</span>
-      <span class="brand__word">HOLDFAST</span>
+      <span class="brand__word">Steadholme</span>
     </a>
     <div class="topbar__right">{userbox}</div>
   </div>
@@ -385,15 +385,15 @@ pub fn render_host_detail(
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light">
-<title>Vitals · HOLDFAST</title>
+<title>Vitals · Steadholme</title>
 <style>{css}</style>
 </head>
 <body>
 <header class="topbar">
   <div class="topbar__inner">
-    <a class="brand" href="/" aria-label="HOLDFAST Vitals">
+    <a class="brand" href="/" aria-label="Steadholme Vitals">
       <span class="brand__glyph" aria-hidden="true">{shield}</span>
-      <span class="brand__word">HOLDFAST</span>
+      <span class="brand__word">Steadholme</span>
     </a>
     <div class="topbar__right">{userbox}</div>
   </div>
@@ -1026,7 +1026,7 @@ fn event_tier(score: f64, z_threshold: f64) -> EventTier {
 /// Cross-subdomain SSO logout (terminated at the gateway / Keystone IdP).
 const LOGOUT_URL: &str = "/_gw/auth/logout";
 
-/// The right side of the app-bar, shared with every HOLDFAST service: a page title, an
+/// The right side of the app-bar, shared with every Steadholme service: a page title, an
 /// "All apps" pill back to the apex portal, the signed-in user chip (avatar initial + email),
 /// and the cross-subdomain logout. `email` is the gateway-injected identity; the unknown
 /// placeholder (`—`) or an empty string renders no user chip (public-page friendly).
@@ -1471,7 +1471,7 @@ pub fn esc(s: &str) -> String {
         .replace('\'', "&#x27;")
 }
 
-/// HOLDFAST shield glyph (indigo gradient), shared with the Keystone/console app-bar.
+/// Steadholme shield glyph (indigo gradient), shared with the Keystone/console app-bar.
 const SHIELD_SVG: &str = r##"<svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
 <defs><linearGradient id="hf-shield-v" x1="8" y1="4" x2="40" y2="44" gradientUnits="userSpaceOnUse">
 <stop stop-color="#818CF8"/><stop offset="1" stop-color="#4F46E5"/></linearGradient></defs>

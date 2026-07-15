@@ -24,7 +24,7 @@ async fn empty_dashboard_renders_brand_and_empty_state() {
     let state = build_dev_state();
     let (status, html) = get_html(&state, None).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(html.contains("HOLDFAST"), "brand wordmark present");
+    assert!(html.contains("Steadholme"), "brand wordmark present");
     assert!(html.contains("Vitals"), "app name present");
     assert!(html.contains("/_gw/auth/logout"), "logout link to gateway");
     assert!(html.contains("暂无数据"), "empty state shown");

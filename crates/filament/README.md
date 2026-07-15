@@ -1,4 +1,4 @@
-# Filament — distributed tracing for HOLDFAST
+# Filament — distributed tracing for Steadholme
 
 Filament collapses Jaeger/Tempo into one DB: it stores spans, reconstructs traces, and renders a
 waterfall, so request latency across the estate's services is queryable from a single

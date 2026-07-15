@@ -1,4 +1,4 @@
-//! Sift — log aggregation + search with template clustering for the HOLDFAST stack.
+//! Sift — log aggregation + search with template clustering for the Steadholme stack.
 //!
 //! Library root: defines [`AppState`], wires the routes via [`app`], runs the HTTP server and the
 //! syslog listeners concurrently via [`run`], and provides [`build_dev_state`] (in-memory store)

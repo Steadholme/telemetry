@@ -1,4 +1,4 @@
-//! Telemetry — one container hosting the HOLDFAST observability surfaces (logs / traces).
+//! Telemetry — one container hosting the Steadholme observability surfaces (logs / traces).
 //!
 //! Each surface is its OWN library crate (Sift/Filament), reused verbatim: same schema, same
 //! routes, same templates, same OWN database, same subdomain, same OWN ingest bearer token. This

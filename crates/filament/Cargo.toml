@@ -2,7 +2,7 @@
 name = "filament"
 version = "0.1.0"
 edition = "2021"
-description = "Filament — distributed tracing (OTLP span ingest + trace waterfall) for the HOLDFAST stack."
+description = "Filament — distributed tracing (OTLP span ingest + trace waterfall) for the Steadholme stack."
 license = "MIT OR Apache-2.0"
 
 [lib]

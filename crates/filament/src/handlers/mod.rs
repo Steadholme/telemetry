@@ -5,7 +5,7 @@
 //! - [`dashboard`] — the server-rendered SSO trace explorer (`GET /`, `/trace/{id}`, `/api/traces`).
 //!
 //! The shared design tokens / CSS are embedded (via `include_str!`) and inlined into every page,
-//! matching the HOLDFAST enterprise brand (the same look as the Keystone/Inkwell UI): brand
+//! matching the Steadholme enterprise brand (the same look as the Keystone/Inkwell UI): brand
 //! gradient, indigo accent, cards, app-bar.
 
 pub mod dashboard;
@@ -19,14 +19,14 @@ use std::{
 
 use axum::http::StatusCode;
 
-/// Embedded service CSS layered after Odyssey's canonical HOLDFAST design system.
+/// Embedded service CSS layered after Odyssey's canonical Steadholme design system.
 pub const SERVICE_CSS: &str = include_str!("../../static/service.css");
 static APP_CSS: OnceLock<String> = OnceLock::new();
 
 /// Cross-subdomain gateway logout (Filament lives at traces.w33d.xyz; the IdP is at id.w33d.xyz).
 pub const LOGOUT_URL: &str = "https://sso.w33d.xyz/_gw/auth/logout";
 
-/// The HOLDFAST shield glyph (small, for the app-bar brand lockup).
+/// The Steadholme shield glyph (small, for the app-bar brand lockup).
 pub const SHIELD_SVG: &str = r##"<svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="hf-shield-sm" x1="8" y1="4" x2="40" y2="44" gradientUnits="userSpaceOnUse"><stop stop-color="#818CF8"/><stop offset="1" stop-color="#4F46E5"/></linearGradient></defs><path d="M24 4 8 9.5V22c0 11 7 17.4 16 21.5C33 39.4 40 33 40 22V9.5L24 4Z" fill="url(#hf-shield-sm)"/><rect x="20" y="19" width="8" height="13" rx="1" fill="#fff" fill-opacity="0.92"/><path d="M20 19v-2.5a4 4 0 0 1 8 0V19" stroke="#fff" stroke-width="2" stroke-opacity="0.92" fill="none"/></svg>"##;
 
 /// Full CSS payload: canonical Odyssey first, Filament's service layer second.
@@ -49,7 +49,7 @@ pub fn esc(s: &str) -> String {
         .replace('\'', "&#x27;")
 }
 
-/// Render the shared app-bar: shield + HOLDFAST wordmark on the left; the page title, an
+/// Render the shared app-bar: shield + Steadholme wordmark on the left; the page title, an
 /// "All apps" link back to the apex portal, the signed-in user chip (avatar initial + email),
 /// and a Logout link to the gateway on the right. A blank/placeholder email (public or error
 /// pages with no gateway identity) renders the chrome without a user chip.
@@ -71,9 +71,9 @@ pub fn topbar(page_title: &str, email: &str) -> String {
     format!(
         r#"<header class="topbar">
   <div class="topbar__inner">
-    <a class="brand" href="/" aria-label="HOLDFAST Filament">
+    <a class="brand" href="/" aria-label="Steadholme Filament">
       <span class="brand__glyph" aria-hidden="true">{shield}</span>
-      <span class="brand__word">HOLDFAST</span>
+      <span class="brand__word">Steadholme</span>
     </a>
     <div class="topbar__right">
       <span class="topbar__title">{title}</span>

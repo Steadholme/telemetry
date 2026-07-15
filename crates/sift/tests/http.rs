@@ -178,6 +178,6 @@ async fn dashboard_renders_html() {
         .await
         .unwrap();
     let html = body_to_string(&bytes);
-    assert!(html.contains("HOLDFAST"));
+    assert!(html.contains("Steadholme"));
     assert!(html.contains("Top templates"));
 }
