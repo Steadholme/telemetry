@@ -178,10 +178,10 @@ mod tests {
         assert!(require_operator(&HeaderMap::new()).is_err());
         let mut h = HeaderMap::new();
         h.insert(HEADER_SUBJECT, "u_1".parse().unwrap());
-        h.insert(HEADER_EMAIL, "a@holdfast.local".parse().unwrap());
+        h.insert(HEADER_EMAIL, "a@steadholme.local".parse().unwrap());
         let (sub, em) = require_operator(&h).unwrap();
         assert_eq!(sub, "u_1");
-        assert_eq!(em, "a@holdfast.local");
+        assert_eq!(em, "a@steadholme.local");
     }
 
     #[test]

@@ -50,10 +50,10 @@ async fn dashboard_shows_host_gauges_and_injected_email() {
         ],
     ).await;
 
-    let (status, html) = get_html(&state, Some("ops@holdfast.local")).await;
+    let (status, html) = get_html(&state, Some("ops@steadholme.local")).await;
     assert_eq!(status, StatusCode::OK);
     // Injected identity shows in the app-bar.
-    assert!(html.contains("ops@holdfast.local"), "signed-in email rendered");
+    assert!(html.contains("ops@steadholme.local"), "signed-in email rendered");
     // Host + its latest gauge values are present.
     assert!(html.contains("edge-1"), "host name rendered");
     assert!(html.contains("64.5%"), "latest cpu value rendered");
