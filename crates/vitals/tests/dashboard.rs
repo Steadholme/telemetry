@@ -27,7 +27,7 @@ async fn empty_dashboard_renders_brand_and_empty_state() {
     assert!(html.contains("Steadholme"), "brand wordmark present");
     assert!(html.contains("Vitals"), "app name present");
     assert!(html.contains("/_gw/auth/logout"), "logout link to gateway");
-    assert!(html.contains("暂无数据"), "empty state shown");
+    assert!(html.contains("无读数 · No readings"), "empty state shown");
 }
 
 #[tokio::test]
@@ -63,7 +63,7 @@ async fn dashboard_shows_host_gauges_and_injected_email() {
     // Human-readable memory figure.
     assert!(html.contains("GiB"), "memory figure humanized");
     // The empty state is gone.
-    assert!(!html.contains("暂无数据"));
+    assert!(!html.contains("无读数 · No readings"));
 }
 
 #[tokio::test]

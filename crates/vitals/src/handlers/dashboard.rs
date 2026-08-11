@@ -245,7 +245,7 @@ mod tests {
         let html = String::from_utf8(bytes.to_vec()).unwrap();
         assert!(html.contains("未知主机 · Unknown host"));
         assert!(!html.contains("<script>"));
-        assert!(!html.contains("暂无数据"));
+        assert!(!html.contains("无读数 · No readings"));
     }
 
     #[tokio::test]

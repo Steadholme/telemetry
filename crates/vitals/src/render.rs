@@ -8,7 +8,7 @@
 use std::{collections::BTreeMap, sync::OnceLock};
 
 use crate::analytics;
-use crate::chart::{self, Domain, Line, SparkOpts, Tone};
+use crate::chart::{self, Access, Domain, Line, SparkOpts, Tone};
 use crate::metrics::{self, SampleRow};
 use crate::store::{Anomaly, Bucket};
 
@@ -160,6 +160,7 @@ fn forecast_series(series: &[(i64, f64)], steps: usize) -> Vec<(i64, f64)> {
 }
 
 /// Render the whole dashboard document.
+#[allow(clippy::too_many_arguments)]
 pub fn render(
     hosts: &[HostView],
     anomalies: &[Anomaly],
@@ -195,7 +196,7 @@ pub fn render(
     let rangebar = rangebar(None, range_label);
 
     format!(
-        r#"<!DOCTYPE html>
+        r##"<!DOCTYPE html>
 <html lang="zh-CN" data-density="compact">
 <head>
 <meta charset="utf-8">
@@ -205,6 +206,7 @@ pub fn render(
 <style>{css}</style>
 </head>
 <body>
+<a class="vt-skip sr-only" href="#vt-main">跳至读数 · Skip to readings</a>
 <header class="topbar">
   <div class="topbar__inner">
     <a class="brand" href="/" aria-label="Steadholme Vitals">
@@ -214,20 +216,20 @@ pub fn render(
     <div class="topbar__right">{userbox}</div>
   </div>
 </header>
-<main class="wrap">
+<main class="wrap" id="vt-main">
   <div class="page-head">
     <div>
       <h1>主机探针 · Host Vitals</h1>
-      <p class="muted">实时 CPU / 内存 / 磁盘 / 负载，每台主机采样上报。</p>
+      <p class="muted">各主机探针的有界采样读数 · Bounded probe readings — latest sample, not live.</p>
     </div>
   </div>
   {summary}
   {rangebar}
-  <div class="vt-fleet">{cards}</div>
+  <section class="vt-fleet" aria-label="host readings · 主机读数">{cards}</section>
   {anomaly_panel}
 </main>
 </body>
-</html>"#,
+</html>"##,
         css = app_css(),
         shield = SHIELD_SVG,
         userbox = userbox(email),
@@ -242,7 +244,7 @@ pub fn render(
 /// string is intentionally not echoed.
 pub fn render_unknown_host(email: &str) -> String {
     format!(
-        r#"<!DOCTYPE html>
+        r##"<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
@@ -252,6 +254,7 @@ pub fn render_unknown_host(email: &str) -> String {
 <style>{css}</style>
 </head>
 <body>
+<a class="vt-skip sr-only" href="#vt-main">跳至读数 · Skip to readings</a>
 <header class="topbar">
   <div class="topbar__inner">
     <a class="brand" href="/" aria-label="Steadholme Vitals">
@@ -261,7 +264,7 @@ pub fn render_unknown_host(email: &str) -> String {
     <div class="topbar__right">{userbox}</div>
   </div>
 </header>
-<main class="wrap">
+<main class="wrap" id="vt-main">
   <section class="card vitals-card vitals-card--empty">
     <h2>未知主机 · Unknown host</h2>
     <p class="muted">此主机不在当前探针集合中。返回总览查看已上报主机。</p>
@@ -269,14 +272,15 @@ pub fn render_unknown_host(email: &str) -> String {
   </section>
 </main>
 </body>
-</html>"#,
+</html>"##,
         css = app_css(),
         shield = SHIELD_SVG,
         userbox = userbox(email),
     )
 }
 
-/// Per-host drill-down. Filled out in the redesign steps after routing is in place.
+/// Per-host drill-down: breadcrumb, detail head, the five metric sections, and the host
+/// eventline (when the window holds events).
 #[allow(clippy::too_many_arguments)]
 pub fn render_host_detail(
     host: &str,
@@ -297,13 +301,7 @@ pub fn render_host_detail(
     };
     let display = current.display_name.as_str();
     let age = now - current.last_ts;
-    let (pill_class, pill_text) = if age <= 60 {
-        ("pill--ok", "在线".to_string())
-    } else if age <= 600 {
-        ("pill--warn", format!("{} 前", human_age(age)))
-    } else {
-        ("pill--down", format!("{} 前", human_age(age)))
-    };
+    let (pill_class, pill_text) = freshness_pill(age);
     let idx = hosts.iter().position(|h| h.host == host).unwrap_or(0);
     let prev = idx
         .checked_sub(1)
@@ -326,6 +324,7 @@ pub fn render_host_detail(
             Domain::Pct,
             (since, now),
             detail_step,
+            range_label,
         ),
         metric_section(
             "内存 · Memory",
@@ -338,6 +337,7 @@ pub fn render_host_detail(
             Domain::Pct,
             (since, now),
             detail_step,
+            range_label,
         ),
         metric_section(
             "磁盘 · Disk",
@@ -350,6 +350,7 @@ pub fn render_host_detail(
             Domain::Pct,
             (since, now),
             detail_step,
+            range_label,
         ),
         metric_section(
             "负载 · Load",
@@ -362,6 +363,7 @@ pub fn render_host_detail(
             Domain::Auto { headroom: 1.2 },
             (since, now),
             detail_step,
+            range_label,
         ),
         metric_section(
             "网络 · Network",
@@ -374,12 +376,13 @@ pub fn render_host_detail(
             Domain::Auto { headroom: 1.2 },
             (since, now),
             detail_step,
+            range_label,
         ),
     ]
     .join("");
     let events = host_eventline(host, anomalies, since, detect_secs, z_threshold, now);
     format!(
-        r#"<!DOCTYPE html>
+        r##"<!DOCTYPE html>
 <html lang="zh-CN" data-density="compact">
 <head>
 <meta charset="utf-8">
@@ -389,6 +392,7 @@ pub fn render_host_detail(
 <style>{css}</style>
 </head>
 <body>
+<a class="vt-skip sr-only" href="#vt-main">跳至读数 · Skip to readings</a>
 <header class="topbar">
   <div class="topbar__inner">
     <a class="brand" href="/" aria-label="Steadholme Vitals">
@@ -398,8 +402,8 @@ pub fn render_host_detail(
     <div class="topbar__right">{userbox}</div>
   </div>
 </header>
-<main class="wrap">
-  <nav class="breadcrumb"><a href="/">主机 Hosts</a> / <span>{display}</span></nav>
+<main class="wrap" id="vt-main">
+  <nav class="breadcrumb" aria-label="breadcrumb"><a href="/">主机 Hosts</a> / <span aria-current="page">{display}</span></nav>
   <div class="vt-detailhead">
     {tile}
     <div class="vt-detailhead__title">
@@ -407,7 +411,7 @@ pub fn render_host_detail(
       <div class="vt-host__id mono" title="{host_attr}">{host}</div>
     </div>
     <div class="vt-detailhead__meta">
-      <span class="pill {pill_class}">{pill_text}</span>
+      <span class="pill {pill_class} vt-fresh">{pill_text}</span>
       <span class="pill pill--muted">{uptime}</span>
       <span class="pill pill--muted">last seen {last_seen}</span>
     </div>
@@ -418,7 +422,7 @@ pub fn render_host_detail(
   {events}
 </main>
 </body>
-</html>"#,
+</html>"##,
         css = app_css(),
         shield = SHIELD_SVG,
         userbox = userbox(email),
@@ -462,6 +466,7 @@ fn metric_section(
     domain: Domain,
     range: (i64, i64),
     step: i64,
+    range_label: &str,
 ) -> String {
     let series_by_metric: Vec<(&str, Vec<(i64, f64)>)> = metrics
         .iter()
@@ -481,16 +486,39 @@ fn metric_section(
         .map(|(_, series)| series.as_slice())
         .unwrap_or(&[]);
     let anoms = anomaly_points(anomalies, host_id, primary_metric, range.0);
-    let svg = chart::detail_svg(&lines, &anoms, &domain, range, 720.0, 180.0);
-    let stats = stats_strip(primary_metric, host.g(primary_metric), primary_series);
-    let legend = legend_for(metrics);
+    let summary = field_summary(primary_metric, host.g(primary_metric), primary_series);
+    // The merged gap union is computed by the authoritative emitter (`default_gap` stays
+    // chart-private and must not be duplicated here), so probe the real geometry to learn
+    // whether the union is non-empty for the accessible name and the gap legend key.
+    let has_gaps = detail_has_gap_bands(&lines, &domain, range, 720.0, 180.0);
+    let slug = field_slug(primary_metric);
+    let name_id = format!("vt-fld-{slug}");
+    let mut name = format!(
+        "{title} trace · {range_label} window · {n} samples · latest {latest} · min {min} · avg {avg} · max {max}",
+        n = summary.n,
+        latest = summary.latest,
+        min = summary.min,
+        avg = summary.avg,
+        max = summary.max,
+    );
+    if has_gaps {
+        name.push_str(" · gaps present");
+    }
+    let access = Access {
+        label: &name,
+        desc: None,
+        name_id: &name_id,
+    };
+    let svg = chart::detail_svg(&lines, &anoms, &domain, range, 720.0, 180.0, &access);
+    let stats = stats_strip(&summary, &format!("{name_id}-rail"));
+    let legend = legend_for(metrics, &domain, has_gaps, summary.n < 2);
     let subrow = section_subrow(host, primary_metric);
     let chart = chart_frame(primary_metric, primary_series, &domain, range, &svg);
     format!(
         r#"<section class="card vt-section">
   <div class="vt-section__head">
     <div>
-      <h2>{title}</h2>
+      <h2 id="{title_id}">{title}</h2>
       {subrow}
     </div>
     {stats}
@@ -498,6 +526,7 @@ fn metric_section(
   {chart}
   {legend}
 </section>"#,
+        title_id = esc(&format!("{name_id}-title")),
         title = esc(title),
         subrow = subrow,
         stats = stats,
@@ -514,7 +543,19 @@ fn bucket_series(buckets: &[Bucket], metric: &str, since: i64, step: i64) -> Vec
         .collect()
 }
 
-fn stats_strip(metric: &str, current: Option<f64>, series: &[(i64, f64)]) -> String {
+/// The one field-summary source: latest/min/avg/max as already-formatted strings plus the
+/// rendered-sample count, computed once from the rendered series only. Both the visible
+/// `.vt-stats` rail and the SVG accessible name read these same bytes, so they cannot
+/// diverge; `chart.rs` formats no label number of its own.
+struct FieldSummary {
+    latest: String,
+    min: String,
+    avg: String,
+    max: String,
+    n: usize,
+}
+
+fn field_summary(metric: &str, current: Option<f64>, series: &[(i64, f64)]) -> FieldSummary {
     let values: Vec<f64> = series.iter().map(|(_, value)| *value).collect();
     let min = values.iter().copied().reduce(f64::min);
     let max = values.iter().copied().reduce(f64::max);
@@ -523,25 +564,41 @@ fn stats_strip(metric: &str, current: Option<f64>, series: &[(i64, f64)]) -> Str
     } else {
         Some(values.iter().sum::<f64>() / values.len() as f64)
     };
+    let fmt = |value: Option<f64>| {
+        value
+            .map(|v| fmt_metric(metric, v))
+            .unwrap_or_else(|| "—".to_string())
+    };
+    FieldSummary {
+        latest: fmt(current),
+        min: fmt(min),
+        avg: fmt(avg),
+        max: fmt(max),
+        n: series.len(),
+    }
+}
+
+fn stats_strip(summary: &FieldSummary, rail_id: &str) -> String {
     format!(
-        r#"<div class="vt-stats">
-  {now}
+        r#"<div class="vt-stats" id="{rail_id}">
+  {latest}
   {min}
   {avg}
   {max}
 </div>"#,
-        now = stat_cell("now", current.map(|v| fmt_metric(metric, v))),
-        min = stat_cell("min", min.map(|v| fmt_metric(metric, v))),
-        avg = stat_cell("avg", avg.map(|v| fmt_metric(metric, v))),
-        max = stat_cell("max", max.map(|v| fmt_metric(metric, v))),
+        rail_id = esc(rail_id),
+        latest = stat_cell("latest", &summary.latest),
+        min = stat_cell("min", &summary.min),
+        avg = stat_cell("avg", &summary.avg),
+        max = stat_cell("max", &summary.max),
     )
 }
 
-fn stat_cell(label: &str, value: Option<String>) -> String {
+fn stat_cell(label: &str, value: &str) -> String {
     format!(
         r#"<div class="vt-stat"><span>{label}</span><b>{value}</b></div>"#,
         label = esc(label),
-        value = esc(value.as_deref().unwrap_or("—")),
+        value = esc(value),
     )
 }
 
@@ -557,7 +614,7 @@ fn chart_frame(
         r#"<div class="vt-chart">
   <div class="vt-chart__yaxis">{axis}</div>
   <div class="vt-chart__plot">{svg}</div>
-  <div class="vt-chart__xaxis"><span>{start}</span><span>now</span></div>
+  <div class="vt-chart__xaxis"><span>{start}</span><span>读数时刻 · reading time</span></div>
 </div>"#,
         axis = axis,
         svg = svg,
@@ -593,13 +650,13 @@ fn y_axis(metric: &str, series: &[(i64, f64)], domain: &Domain) -> String {
         .collect()
 }
 
-fn legend_for(metrics: &[&str]) -> String {
-    if metrics.len() < 2 {
-        return String::new();
-    }
-    let items = metrics
-        .iter()
-        .map(|metric| {
+/// Detail legend: multi-series line keys, the threshold key (Pct domains only), the gap
+/// key when the field renders merged gap bands, and the empty-series micro-key when the
+/// primary series has nothing drawable in the window.
+fn legend_for(metrics: &[&str], domain: &Domain, has_gaps: bool, primary_empty: bool) -> String {
+    let mut items = String::new();
+    if metrics.len() >= 2 {
+        for metric in metrics {
             let label = match *metric {
                 metrics::M_LOAD1 => "1m",
                 metrics::M_LOAD5 => "5m",
@@ -608,14 +665,29 @@ fn legend_for(metrics: &[&str]) -> String {
                 metrics::M_NET_TX => "↑ TX",
                 _ => *metric,
             };
-            format!(
+            items.push_str(&format!(
                 r#"<span class="{class}"><i></i>{label}</span>"#,
                 class = esc(metric_line_class(metric)),
                 label = esc(label),
-            )
-        })
-        .collect::<String>();
-    format!(r#"<div class="vt-legend">{items}</div>"#)
+            ));
+        }
+    }
+    if matches!(domain, Domain::Pct) {
+        items.push_str(r#"<span class="vt-legend__threshold"><i></i>90% 阈值 · threshold</span>"#);
+    }
+    if has_gaps {
+        items.push_str(r#"<span class="vt-legend__gap"><i></i>gap · 缺测</span>"#);
+    }
+    if primary_empty {
+        items.push_str(
+            r#"<span class="vt-legend__empty">窗口内无样本 · no samples in window</span>"#,
+        );
+    }
+    if items.is_empty() {
+        String::new()
+    } else {
+        format!(r#"<div class="vt-legend">{items}</div>"#)
+    }
 }
 
 fn section_subrow(host: &HostView, metric: &str) -> String {
@@ -816,6 +888,7 @@ fn group_anomalies_with_threshold(
     folded
 }
 
+#[allow(clippy::too_many_arguments)]
 fn anomaly_watch(
     anomalies: &[Anomaly],
     now: i64,
@@ -844,15 +917,20 @@ fn anomaly_watch(
     let body = if events.is_empty() {
         format!(
             r#"<div class="vt-quiet">
-  <div><span class="pill pill--ok">正常</span> 过去 24 小时无异常 · No anomalies</div>
+  <div><span class="pill pill--ok">平静 · quiet</span> 所选窗口（{range_label}）内未记录异常事件 · No anomaly events recorded in the selected window ({range_label}) · 自基线 self-baseline</div>
   <div class="vt-quiet__note">z ≥ {z:.1} · window {window} · 每 {detect_secs}s 扫描</div>
 </div>"#,
+            range_label = esc(range_label),
             z = z_threshold,
             window = window,
             detect_secs = detect_secs,
         )
     } else {
-        let rows = events.iter().map(|e| event_row(e, now)).collect::<String>();
+        let rows = events
+            .iter()
+            .enumerate()
+            .map(|(i, e)| event_row(e, now, i + 1))
+            .collect::<String>();
         format!(r#"<div class="vt-events">{rows}</div>"#)
     };
 
@@ -860,8 +938,8 @@ fn anomaly_watch(
         r#"<section id="vt-anomaly" class="card vt-anomaly" data-density="compact">
   <div class="card__head">
     <div class="card__title">
-      <h2>异常监测 · Anomaly Watch</h2>
-      <p class="vt-anomaly__meta">z ≥ {z:.1} · window {window} · 每 {detect_secs}s 扫描</p>
+      <h2>异常记录 · Anomaly ledger</h2>
+      <p class="vt-anomaly__meta">z ≥ {z:.1} · window {window} · 每 {detect_secs}s 扫描 · 自基线 self-baseline</p>
     </div>
     <span class="pill pill--down">{crit} critical</span>
     <span class="pill pill--warn">{warn} warn</span>
@@ -894,27 +972,29 @@ fn anomaly_filters(
         *counts.entry(a.host.clone()).or_insert(0) += 1;
     }
     let total: usize = counts.values().sum();
-    let all_class = if active_host.is_none() {
-        "chip chip--solid"
+    let (all_class, all_current) = if active_host.is_none() {
+        ("chip chip--solid", r#" aria-current="true""#)
     } else {
-        "chip chip--outline"
+        ("chip chip--outline", "")
     };
     let mut out = format!(
-        r#"<div class="vt-anomaly__filters"><a class="{all_class}" href="/?range={range}">全部 All <span class="countpill">{total}</span></a>"#,
+        r#"<div class="vt-anomaly__filters"><a class="{all_class}" href="/?range={range}"{all_current}>全部 All <span class="countpill">{total}</span></a>"#,
         all_class = all_class,
+        all_current = all_current,
         range = esc(range_label),
         total = total,
     );
     for (host, count) in counts {
-        let class = if active_host == Some(host.as_str()) {
-            "chip chip--solid chip--dot"
+        let (class, current) = if active_host == Some(host.as_str()) {
+            ("chip chip--solid chip--dot", r#" aria-current="true""#)
         } else {
-            "chip chip--outline chip--dot"
+            ("chip chip--outline chip--dot", "")
         };
         let href = format!("/?host={}&range={}", pct_encode(&host), range_label);
         out.push_str(&format!(
-            r#"<a class="{class}" href="{href}">{tile}<span>{host}</span><span class="countpill">{count}</span></a>"#,
+            r#"<a class="{class}" href="{href}"{current}>{tile}<span>{host}</span><span class="countpill">{count}</span></a>"#,
             class = class,
+            current = current,
             href = esc(&href),
             tile = odyssey::identity::letter_tile(&host, &host),
             host = esc(&host),
@@ -925,7 +1005,7 @@ fn anomaly_filters(
     out
 }
 
-fn event_row(event: &VtEvent, now: i64) -> String {
+fn event_row(event: &VtEvent, now: i64, ordinal: usize) -> String {
     let tier_class = match event.tier {
         EventTier::Warn => "vt-event--warn",
         EventTier::Crit => "vt-event--crit",
@@ -933,6 +1013,10 @@ fn event_row(event: &VtEvent, now: i64) -> String {
     let dot_class = match event.tier {
         EventTier::Warn => "eventline__dot--warn",
         EventTier::Crit => "eventline__dot--down",
+    };
+    let tier_word = match event.tier {
+        EventTier::Warn => "warn",
+        EventTier::Crit => "crit",
     };
     let direction = if event.peak_z >= 0.0 {
         "↑ surge"
@@ -947,16 +1031,20 @@ fn event_row(event: &VtEvent, now: i64) -> String {
     format!(
         r#"<article class="vt-event {tier_class}">
   <span class="vt-event__dot {dot_class}" aria-hidden="true"></span>
+  <span class="vt-event__no mono">#{ordinal:02}</span>
   <div class="vt-event__main">
     <div class="vt-event__host">{tile}<span class="mono">{host}</span>{count}</div>
     <div class="vt-event__title">{title} · {direction}</div>
     <div class="vt-event__val">{value}</div>
   </div>
+  <span class="vt-event__tier">{tier_word}</span>
   <div class="vt-event__z">z = {z}</div>
   <time class="vt-event__time">{when}</time>
 </article>"#,
         tier_class = tier_class,
         dot_class = dot_class,
+        ordinal = ordinal,
+        tier_word = tier_word,
         tile = odyssey::identity::letter_tile(&event.host, &event.host),
         host = esc(&event.host),
         count = count,
@@ -1062,35 +1150,36 @@ fn userbox(email: &str) -> String {
 }
 
 fn summary_strip(hosts: &[HostView], anomalies: &[Anomaly], since: i64, now: i64) -> String {
-    let online = hosts.iter().filter(|h| now - h.last_ts <= 60).count();
+    let fresh = hosts.iter().filter(|h| now - h.last_ts <= 60).count();
     let active_anomalies = anomalies.iter().filter(|a| a.ts >= since).count();
-    let host_tone = if online == hosts.len() {
+    let host_tone = if fresh == hosts.len() {
         "stat__val--ok"
     } else {
         "stat__val--warn"
     };
     format!(
-        r##"<section class="stat-grid vt-summary" aria-label="fleet summary">
+        r##"<section class="stat-grid vt-calibration" aria-label="fleet readings · 车队读数">
+  <h2 class="sr-only">fleet readings · 车队读数</h2>
   <div class="stat">
-    <div class="stat__label">在线主机 · Online</div>
-    <div class="stat__value {host_tone}">{online} / {total}</div>
+    <div class="stat__label">新鲜主机 · Fresh hosts</div>
+    <div class="stat__value {host_tone}">{fresh} / {total}</div>
     <div class="stat__meta">≤60s fresh</div>
   </div>
   {cpu}
   {mem}
   {disk}
-  <a class="stat vt-summary__link" href="#vt-anomaly">
-    <div class="stat__label">异常 · Anomalies</div>
+  <a class="stat vt-calibration__link" href="#vt-anomaly">
+    <div class="stat__label">窗口异常 · Anomalies in window</div>
     <div class="stat__value">{active_anomalies}</div>
     <div class="stat__meta">in selected range</div>
   </a>
 </section>"##,
         host_tone = host_tone,
-        online = online,
+        fresh = fresh,
         total = hosts.len(),
-        cpu = summary_pct_tile("最热 CPU · Worst CPU", hosts, metrics::M_CPU_PCT),
-        mem = summary_pct_tile("最高内存 · Worst MEM", hosts, metrics::M_MEM_PCT),
-        disk = summary_pct_tile("最高磁盘 · Worst DISK", hosts, metrics::M_DISK_PCT),
+        cpu = summary_pct_tile("最热 CPU · Worst CPU (latest)", hosts, metrics::M_CPU_PCT),
+        mem = summary_pct_tile("最高内存 · Worst MEM (latest)", hosts, metrics::M_MEM_PCT),
+        disk = summary_pct_tile("最高磁盘 · Worst DISK (latest)", hosts, metrics::M_DISK_PCT),
         active_anomalies = active_anomalies,
     )
 }
@@ -1100,26 +1189,33 @@ fn summary_pct_tile(label: &str, hosts: &[HostView], metric: &str) -> String {
         .iter()
         .filter_map(|host| host.g(metric).map(|value| (host, value)))
         .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let (value, meta, pct, tone) = match worst {
+    let (value, meta, fill) = match worst {
         Some((host, value)) => (
             fmt_metric(metric, value),
             host.display_name.clone(),
-            value.clamp(0.0, 100.0),
-            pct_tone(Some(value)),
+            format!(
+                r#"<i class="{tone}" style="width:{pct:.1}%"></i>"#,
+                tone = pct_tone(Some(value)),
+                pct = value.clamp(0.0, 100.0),
+            ),
         ),
-        None => ("—".to_string(), "no data".to_string(), 0.0, "is-muted"),
+        // No reading in the fleet: an empty track, never a zero-filled bar.
+        None => (
+            "—".to_string(),
+            "无读数 · no readings".to_string(),
+            String::new(),
+        ),
     };
     format!(
         r#"<div class="stat">
   <div class="stat__label">{label}</div>
   <div class="stat__value">{value}</div>
-  <div class="stat__meter"><i class="{tone}" style="width:{pct:.1}%"></i></div>
+  <div class="stat__meter">{fill}</div>
   <div class="stat__meta">{meta}</div>
 </div>"#,
         label = esc(label),
         value = esc(&value),
-        tone = tone,
-        pct = pct,
+        fill = fill,
         meta = esc(&meta),
     )
 }
@@ -1151,19 +1247,15 @@ fn rangebar(host: Option<&str>, active: &str) -> String {
             )
         })
         .collect::<String>();
-    format!(r#"<nav class="tabs tabs--window vt-rangebar" aria-label="time range">{tabs}</nav>"#)
+    format!(
+        r#"<nav class="tabs tabs--window vt-rangebar" aria-label="measurement window · 测量窗口">{tabs}</nav>"#
+    )
 }
 
-/// One host card: freshness pill, htop-density meters, and 2x2 sparklines.
+/// One host field: freshness pill, htop-density meters, and 2x2 sparklines.
 fn host_card(h: &HostView, now: i64, since: i64, range_label: &str) -> String {
     let age = now - h.last_ts;
-    let (pill_class, pill_text) = if age <= 60 {
-        ("pill--ok", "在线".to_string())
-    } else if age <= 600 {
-        ("pill--warn", format!("{} 前", human_age(age)))
-    } else {
-        ("pill--down", format!("{} 前", human_age(age)))
-    };
+    let (pill_class, pill_text) = freshness_pill(age);
 
     let cpu = h.g(metrics::M_CPU_PCT);
     let mem = h.g(metrics::M_MEM_PCT);
@@ -1197,15 +1289,15 @@ fn host_card(h: &HostView, now: i64, since: i64, range_label: &str) -> String {
     let tile = odyssey::identity::letter_tile(&h.display_name, &h.host).to_string();
     let anomaly_badge = if h.anomaly_count > 0 {
         format!(
-            r#"<span class="pill pill--warn">{n} 异常</span>"#,
+            r#"<span class="pill pill--warn">{n} 窗口内异常</span>"#,
             n = h.anomaly_count
         )
     } else {
         String::new()
     };
-    let offline = age > 600;
-    let offline_class = if offline { " vt-host--offline" } else { "" };
-    let last_seen = if offline {
+    let stale = age > 600;
+    let stale_class = if stale { " vt-host--stale" } else { "" };
+    let last_seen = if stale {
         format!(
             r#"<div class="vt-lastseen">最后上报 · last seen {}</div>"#,
             esc(&format!("{} 前", human_age(age)))
@@ -1215,13 +1307,129 @@ fn host_card(h: &HostView, now: i64, since: i64, range_label: &str) -> String {
     };
     let spark_range = (since, now);
     let gap = ((now - since).max(1) / 60).max(crate::config::DEFAULT_SCRAPE_INTERVAL as i64) * 2;
-    let cpu_svg = pct_spark(&h.spark_cpu, &h.forecast_cpu, spark_range, cpu, gap);
-    let mem_svg = pct_spark(&h.spark_mem, &h.forecast_mem, spark_range, mem, gap);
-    let disk_svg = pct_spark(&h.spark_disk, &h.forecast_disk, spark_range, disk, gap);
-    let net_svg = net_spark(&h.spark_net_rx, &h.spark_net_tx, spark_range);
+
+    // Per-spark accessible identities: the caller composes every name from the identical
+    // formatted head string shown beside the trace; `chart.rs` formats no label number.
+    let cpu_head = pct_fmt(cpu);
+    let mem_head = pct_fmt(mem);
+    let disk_head = pct_fmt(disk);
+    let net_head = net_now(h);
+    let cpu_gaps = !chart::gap_spans(&h.spark_cpu, gap).is_empty();
+    let mem_gaps = !chart::gap_spans(&h.spark_mem, gap).is_empty();
+    let disk_gaps = !chart::gap_spans(&h.spark_disk, gap).is_empty();
+
+    let (cpu_name_id, cpu_name) = pct_spark_access(
+        &h.host,
+        "CPU %",
+        "cpu",
+        h.spark_cpu.len(),
+        &cpu_head,
+        cpu_gaps,
+        range_label,
+    );
+    let cpu_access = Access {
+        label: &cpu_name,
+        desc: None,
+        name_id: &cpu_name_id,
+    };
+    let cpu_svg = pct_spark(
+        &h.spark_cpu,
+        &h.forecast_cpu,
+        spark_range,
+        cpu,
+        gap,
+        &cpu_access,
+    );
+    let cpu_foot = spark_foot(h.spark_cpu.len(), !h.forecast_cpu.is_empty(), cpu_gaps);
+
+    let (mem_name_id, mem_name) = pct_spark_access(
+        &h.host,
+        "MEM %",
+        "mem",
+        h.spark_mem.len(),
+        &mem_head,
+        mem_gaps,
+        range_label,
+    );
+    let mem_access = Access {
+        label: &mem_name,
+        desc: None,
+        name_id: &mem_name_id,
+    };
+    let mem_svg = pct_spark(
+        &h.spark_mem,
+        &h.forecast_mem,
+        spark_range,
+        mem,
+        gap,
+        &mem_access,
+    );
+    let mem_foot = spark_foot(h.spark_mem.len(), !h.forecast_mem.is_empty(), mem_gaps);
+
+    let (disk_name_id, disk_name) = pct_spark_access(
+        &h.host,
+        "DISK %",
+        "disk",
+        h.spark_disk.len(),
+        &disk_head,
+        disk_gaps,
+        range_label,
+    );
+    let disk_access = Access {
+        label: &disk_name,
+        desc: None,
+        name_id: &disk_name_id,
+    };
+    let disk_svg = pct_spark(
+        &h.spark_disk,
+        &h.forecast_disk,
+        spark_range,
+        disk,
+        gap,
+        &disk_access,
+    );
+    let disk_foot = spark_foot(h.spark_disk.len(), !h.forecast_disk.is_empty(), disk_gaps);
+
+    // NET is a two-series detail chart: the merged gap union covers RX and TX while each
+    // polyline stays independently segmented.
+    let net_lines = [
+        Line {
+            points: h.spark_net_rx.as_slice(),
+            class: "vt-net-rx",
+            area: false,
+        },
+        Line {
+            points: h.spark_net_tx.as_slice(),
+            class: "vt-net-tx",
+            area: false,
+        },
+    ];
+    let net_gaps = detail_has_gap_bands(
+        &net_lines,
+        &Domain::Auto { headroom: 1.2 },
+        spark_range,
+        120.0,
+        36.0,
+    );
+    let net_samples = h.spark_net_rx.len() + h.spark_net_tx.len();
+    let net_name_id = format!("vt-spark-{}-net", h.host);
+    let mut net_name = format!(
+        "{} · NET trace · {range_label} window · RX/TX · {net_samples} samples",
+        h.host
+    );
+    if net_gaps {
+        net_name.push_str(" · gaps present");
+    }
+    let net_access = Access {
+        label: &net_name,
+        desc: None,
+        name_id: &net_name_id,
+    };
+    let net_svg = net_spark(&net_lines, spark_range, &net_access);
+    let net_foot = spark_foot(net_samples, false, net_gaps);
 
     format!(
-        r#"<section class="card vt-host{offline_class}">
+        r#"<article class="vt-host{stale_class}">
   <div class="vt-host__head">
     {tile}
     <div class="vt-host__title">
@@ -1229,7 +1437,7 @@ fn host_card(h: &HostView, now: i64, since: i64, range_label: &str) -> String {
       <div class="vt-host__id mono" title="{host_attr}">{host}</div>
     </div>
     <div class="vt-host__side">
-      <span class="pill {pill_class}">{pill_text}</span>
+      <span class="pill {pill_class} vt-fresh">{pill_text}</span>
       <span class="pill pill--muted">{uptime_detail}</span>
       {anomaly_badge}
     </div>
@@ -1250,13 +1458,13 @@ fn host_card(h: &HostView, now: i64, since: i64, range_label: &str) -> String {
     {disk_spark}
     {net_spark}
   </div>
-</section>"#,
+</article>"#,
         host_attr = esc(&h.host),
         host = esc(&h.host),
         display = esc(&h.display_name),
         href = esc(&href),
         tile = tile,
-        offline_class = offline_class,
+        stale_class = stale_class,
         pill_class = pill_class,
         pill_text = esc(&pill_text),
         anomaly_badge = anomaly_badge,
@@ -1267,26 +1475,45 @@ fn host_card(h: &HostView, now: i64, since: i64, range_label: &str) -> String {
         disk_meter = meter("磁盘", disk, &disk_detail),
         load_detail = esc(&load_detail),
         net_detail = esc(&net_detail),
-        cpu_spark = spark_panel("CPU %", &pct_fmt(cpu), &cpu_svg),
-        mem_spark = spark_panel("MEM %", &pct_fmt(mem), &mem_svg),
-        disk_spark = spark_panel("DISK %", &pct_fmt(disk), &disk_svg),
-        net_spark = spark_panel("NET", &net_now(h), &net_svg),
+        cpu_spark = spark_panel("CPU %", &cpu_head, &cpu_svg, &cpu_foot),
+        mem_spark = spark_panel("MEM %", &mem_head, &mem_svg, &mem_foot),
+        disk_spark = spark_panel("DISK %", &disk_head, &disk_svg, &disk_foot),
+        net_spark = spark_panel("NET", &net_head, &net_svg, &net_foot),
     )
 }
 
 fn meter(label: &str, pct: Option<f64>, detail: &str) -> String {
-    let fill = pct.unwrap_or(0.0).clamp(0.0, 100.0);
+    let state = match pct {
+        Some(x) if x >= 90.0 => "danger",
+        Some(x) if x >= 70.0 => "warn",
+        Some(_) => "ok",
+        None => "unknown",
+    };
+    // A missing metric is "not reported" — never a zero fill (S11): the bar stays hatched
+    // via data-state and the value reads "—" with an sr-only clarification.
+    let fill = match pct {
+        Some(value) => format!(
+            r#"<span class="vt-meter__fill {tone}" style="width:{fill:.1}%"></span>"#,
+            tone = pct_tone(pct),
+            fill = value.clamp(0.0, 100.0),
+        ),
+        None => String::new(),
+    };
+    let value = match pct {
+        Some(_) => esc(&pct_fmt(pct)),
+        None => "—<span class=\"sr-only\">未上报 · not reported</span>".to_string(),
+    };
     format!(
-        r#"<div class="vt-meter">
+        r#"<div class="vt-meter" data-state="{state}">
   <div class="vt-meter__label">{label}</div>
-  <div class="vt-meter__bar"><span class="vt-meter__fill {tone}" style="width:{fill:.1}%"></span></div>
+  <div class="vt-meter__bar">{fill}</div>
   <div class="vt-meter__val">{value}</div>
   <div class="vt-meter__detail">{detail}</div>
 </div>"#,
+        state = state,
         label = esc(label),
-        tone = pct_tone(pct),
         fill = fill,
-        value = esc(&pct_fmt(pct)),
+        value = value,
         detail = esc(detail),
     )
 }
@@ -1297,6 +1524,7 @@ fn pct_spark(
     range: (i64, i64),
     current: Option<f64>,
     gap_secs: i64,
+    access: &Access<'_>,
 ) -> String {
     chart::spark_svg(
         points,
@@ -1309,42 +1537,34 @@ fn pct_spark(
             tone: pct_chart_tone(current),
             gap_secs,
             with_dot: true,
+            access: *access,
         },
     )
 }
 
-fn net_spark(rx: &[(i64, f64)], tx: &[(i64, f64)], range: (i64, i64)) -> String {
-    let lines = [
-        Line {
-            points: rx,
-            class: "vt-net-rx",
-            area: false,
-        },
-        Line {
-            points: tx,
-            class: "vt-net-tx",
-            area: false,
-        },
-    ];
+fn net_spark(lines: &[Line<'_>], range: (i64, i64), access: &Access<'_>) -> String {
     chart::detail_svg(
-        &lines,
+        lines,
         &[],
         &Domain::Auto { headroom: 1.2 },
         range,
         120.0,
         36.0,
+        access,
     )
 }
 
-fn spark_panel(label: &str, now: &str, svg: &str) -> String {
+fn spark_panel(label: &str, latest: &str, svg: &str, foot: &str) -> String {
     format!(
         r#"<div class="vt-sparkbox">
-  <div class="vt-spark__head"><span class="vt-spark__label">{label}</span><span class="vt-spark__now">{now}</span></div>
+  <div class="vt-spark__head"><span class="vt-spark__label">{label}</span><span class="vt-spark__latest">{latest}</span></div>
   {svg}
+{foot}
 </div>"#,
         label = esc(label),
-        now = esc(now),
+        latest = esc(latest),
         svg = svg,
+        foot = foot,
     )
 }
 
@@ -1366,8 +1586,8 @@ fn net_now(h: &HostView) -> String {
 
 fn empty_state() -> String {
     r#"<section class="card vitals-card vitals-card--empty">
-  <h2>暂无数据</h2>
-  <p class="muted">尚未收到任何探针上报。确认 vitals-agent 正在运行并指向本服务的 /ingest。</p>
+  <h2>无读数 · No readings</h2>
+  <p class="muted">当前没有可显示的探针样本：可能尚未收到任何上报，也可能是测量存储暂不可达。No probe samples to display — either nothing has been reported yet, or the measurement store is temporarily unreachable. 确认 vitals-agent 正在运行并指向本服务的 /ingest。</p>
 </section>"#
         .to_string()
 }
@@ -1377,6 +1597,104 @@ fn empty_state() -> String {
 fn pct_fmt(v: Option<f64>) -> String {
     v.map(|x| format!("{x:.1}%"))
         .unwrap_or_else(|| "—".to_string())
+}
+
+// --- Physiograph additive helpers ------------------------------------------------------
+// Delimited region for the presentation-contract additions (freshness pills, accessible
+// names, spark feet, gap probes). Nothing frozen above is re-implemented here; these
+// helpers only compose caller-owned strings and borrow them for the chart calls.
+
+/// S5 freshness tiers as (pill tone class, bilingual text with a non-colour glyph).
+/// "fresh" is a bounded statement about the latest sample's age — never a liveness claim.
+fn freshness_pill(age: i64) -> (&'static str, String) {
+    if age <= 60 {
+        ("pill--ok", "● 新鲜 · fresh".to_string())
+    } else if age <= 600 {
+        ("pill--warn", format!("◐ 近期 · {} 前", human_age(age)))
+    } else {
+        ("pill--down", format!("○ 陈旧 · {} 前", human_age(age)))
+    }
+}
+
+/// Stable slug for a detail field's primary metric — drives the `vt-fld-*` ids.
+fn field_slug(primary_metric: &str) -> &'static str {
+    match primary_metric {
+        metrics::M_CPU_PCT => "cpu",
+        metrics::M_MEM_PCT => "mem",
+        metrics::M_DISK_PCT => "disk",
+        metrics::M_LOAD1 => "load",
+        metrics::M_NET_RX => "net",
+        _ => "metric",
+    }
+}
+
+/// Whether `chart::detail_svg` renders merged gap bands for these lines over `range`.
+/// `default_gap` is chart-private by contract and must not be duplicated here, so the
+/// authoritative emitter itself is probed with a throwaway accessible name; only the
+/// boolean is consumed, for the accessible-name suffix and the gap legend/foot keys.
+fn detail_has_gap_bands(
+    lines: &[Line<'_>],
+    domain: &Domain,
+    range: (i64, i64),
+    w: f64,
+    h: f64,
+) -> bool {
+    let probe = Access {
+        label: "",
+        desc: None,
+        name_id: "",
+    };
+    chart::detail_svg(lines, &[], domain, range, w, h, &probe).contains("vt-chart__gapband")
+}
+
+/// Overview pct-spark accessible identity (S21): returns the owned `name_id` and `name`
+/// so the borrows in `Access` outlive the `spark_svg` call. The `{host}` prefix is the
+/// raw host id, which keeps names unique across the page even with identical readings;
+/// `head` is the identical formatted string shown in the spark head.
+fn pct_spark_access(
+    host: &str,
+    label: &str,
+    slug: &str,
+    samples: usize,
+    head: &str,
+    has_gaps: bool,
+    range_label: &str,
+) -> (String, String) {
+    let name_id = format!("vt-spark-{host}-{slug}");
+    let mut name = if samples < 2 {
+        format!("{host} · {label} trace · {range_label} window · no samples")
+    } else {
+        format!("{host} · {label} trace · {range_label} window · {samples} samples · latest {head}")
+    };
+    if has_gaps {
+        name.push_str(" · gaps present");
+    }
+    (name_id, name)
+}
+
+/// Spark foot keys (S12/S22/S23): empty-window micro-key, projection key when a forecast
+/// is drawn, gap key when the trace has gap spans. Empty string when no key applies.
+fn spark_foot(samples: usize, has_forecast: bool, has_gaps: bool) -> String {
+    let mut keys = String::new();
+    if samples < 2 {
+        keys.push_str(r#"<span class="vt-spark__key">窗口内无样本 · no samples in window</span>"#);
+    } else {
+        if has_forecast {
+            keys.push_str(
+                r#"<span class="vt-spark__key vt-spark__key--proj"><i></i>proj · 投影</span>"#,
+            );
+        }
+        if has_gaps {
+            keys.push_str(
+                r#"<span class="vt-spark__key vt-spark__key--gap"><i></i>gap · 缺测</span>"#,
+            );
+        }
+    }
+    if keys.is_empty() {
+        String::new()
+    } else {
+        format!(r#"<div class="vt-spark__foot">{keys}</div>"#)
+    }
 }
 
 /// Format one metric value with the unit conventions used across Vitals render surfaces.

@@ -17,14 +17,25 @@ pub enum Tone {
     Mute,
 }
 
+/// Accessibility identity for one rendered SVG: a caller-composed, truthful accessible
+/// name, an optional longer description, and the unique id used for `<desc>` wiring.
+/// No `Default` and no synthesized fallback — every chart is named by its caller.
+#[derive(Clone, Copy, Debug)]
+pub struct Access<'a> {
+    pub label: &'a str,
+    pub desc: Option<&'a str>,
+    pub name_id: &'a str,
+}
+
 #[derive(Clone, Debug)]
-pub struct SparkOpts {
+pub struct SparkOpts<'a> {
     pub w: f64,
     pub h: f64,
     pub domain: Domain,
     pub tone: Tone,
     pub gap_secs: i64,
     pub with_dot: bool,
+    pub access: Access<'a>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -39,7 +50,7 @@ pub fn spark_svg(
     series: &[(i64, f64)],
     forecast: &[(i64, f64)],
     range: (i64, i64),
-    opts: &SparkOpts,
+    opts: &SparkOpts<'_>,
 ) -> String {
     let tone = tone_class(opts.tone);
     let size_class = if opts.h <= 24.0 {
@@ -48,23 +59,27 @@ pub fn spark_svg(
         "vt-spark--card"
     };
     let domain_max = domain_max(&opts.domain, &[series, forecast]);
-    let aria = format!("sparkline {} points", series.len());
+    let access = &opts.access;
     let mut out = format!(
-        r#"<svg class="vt-spark {size_class} {tone}" viewBox="0 0 {w:.1} {h:.1}" preserveAspectRatio="none" role="img" aria-label="{aria}">"#,
+        r#"<svg class="vt-spark {size_class} {tone}" viewBox="0 0 {w:.1} {h:.1}" preserveAspectRatio="none" role="img" id="{id}" aria-label="{label}""#,
         size_class = size_class,
         tone = tone,
         w = opts.w,
         h = opts.h,
-        aria = esc(&aria),
+        id = esc(access.name_id),
+        label = esc(access.label),
     );
+    if let Some(desc) = access.desc {
+        out.push_str(&format!(
+            r#" aria-describedby="{id}-desc"><desc id="{id}-desc">{desc}</desc>"#,
+            id = esc(access.name_id),
+            desc = esc(desc),
+        ));
+    }
+    out.push('>');
 
     if series.len() < 2 {
-        let mid = opts.h / 2.0;
-        out.push_str(&format!(
-            r#"<line class="vt-spark__baseline" x1="0.0" y1="{mid:.1}" x2="{w:.1}" y2="{mid:.1}" vector-effect="non-scaling-stroke"/>"#,
-            mid = mid,
-            w = opts.w,
-        ));
+        // Fewer than two samples is an honest empty trace — never a synthetic baseline.
         out.push_str("</svg>");
         return out;
     }
@@ -116,16 +131,25 @@ pub fn detail_svg(
     range: (i64, i64),
     w: f64,
     h: f64,
+    access: &Access<'_>,
 ) -> String {
     let line_refs: Vec<&[(i64, f64)]> = lines.iter().map(|line| line.points).collect();
     let domain_max = domain_max(domain, &line_refs);
-    let aria = format!("detail chart {} series", lines.len());
     let mut out = format!(
-        r#"<svg class="vt-chart__svg" viewBox="0 0 {w:.1} {h:.1}" preserveAspectRatio="none" role="img" aria-label="{aria}">"#,
+        r#"<svg class="vt-chart__svg" viewBox="0 0 {w:.1} {h:.1}" preserveAspectRatio="none" role="img" id="{id}" aria-label="{label}""#,
         w = w,
         h = h,
-        aria = esc(&aria),
+        id = esc(access.name_id),
+        label = esc(access.label),
     );
+    if let Some(desc) = access.desc {
+        out.push_str(&format!(
+            r#" aria-describedby="{id}-desc"><desc id="{id}-desc">{desc}</desc>"#,
+            id = esc(access.name_id),
+            desc = esc(desc),
+        ));
+    }
+    out.push('>');
 
     for value in grid_values(domain, domain_max) {
         let y = y_at(value, domain, domain_max, h);
@@ -134,6 +158,34 @@ pub fn detail_svg(
             y = y,
             w = w,
         ));
+    }
+
+    // Merged gap union across every supplied line: one band + two dashed edges per merged
+    // interval, after the grid and before the threshold rule and the traces. The frozen
+    // `default_gap` is the only threshold; polylines stay independently segmented below.
+    let gap_secs = default_gap(range);
+    let mut spans = Vec::new();
+    for line in lines {
+        spans.extend(gap_spans(line.points, gap_secs));
+    }
+    for (start, end) in merge_spans(spans) {
+        let x1 = x_at(start, range, w);
+        let x2 = x_at(end, range, w);
+        out.push_str(&format!(
+            r#"<rect class="vt-chart__gapband" x="{x1:.1}" y="0.0" width="{width:.1}" height="{h:.1}"/>"#,
+            x1 = x1,
+            width = x2 - x1,
+            h = h,
+        ));
+        for x in [x1, x2] {
+            out.push_str(&format!(
+                r#"<line class="vt-chart__gapedge" x1="{x:.1}" y1="0.0" x2="{x:.1}" y2="{h:.1}" vector-effect="non-scaling-stroke"><title>gap {start}–{end}</title></line>"#,
+                x = x,
+                h = h,
+                start = start,
+                end = end,
+            ));
+        }
     }
 
     if matches!(domain, Domain::Pct) {
@@ -229,6 +281,34 @@ fn segments(points: &[(i64, f64)], gap_secs: i64) -> Vec<&[(i64, f64)]> {
     }
     out.push(&points[start..]);
     out
+}
+
+/// Gap spans under the same predicate as `segments` — reuses the frozen gap authority,
+/// no new threshold constant. Returns `(gap_start_ts, gap_end_ts)` per broken adjacency.
+pub fn gap_spans(points: &[(i64, f64)], gap_secs: i64) -> Vec<(i64, i64)> {
+    let mut spans = Vec::new();
+    for i in 1..points.len() {
+        if points[i].0 - points[i - 1].0 > gap_secs {
+            spans.push((points[i - 1].0, points[i].0));
+        }
+    }
+    spans
+}
+
+/// Chart-level union of gap spans: sort by `(start_ts, end_ts)`, then merge overlapping
+/// or touching intervals (`next.start <= cur.end`); identical spans collapse to one.
+fn merge_spans(mut spans: Vec<(i64, i64)>) -> Vec<(i64, i64)> {
+    spans.sort_unstable();
+    let mut merged: Vec<(i64, i64)> = Vec::with_capacity(spans.len());
+    for (start, end) in spans {
+        match merged.last_mut() {
+            Some(cur) if start <= cur.1 => {
+                cur.1 = cur.1.max(end);
+            }
+            _ => merged.push((start, end)),
+        }
+    }
+    merged
 }
 
 fn nice_max(value: f64) -> f64 {
@@ -339,5 +419,23 @@ mod tests {
         assert_eq!(nice_max(4.2), 5.0);
         assert_eq!(nice_max(9.1), 10.0);
         assert_eq!(nice_max(863.0), 1000.0);
+    }
+
+    #[test]
+    fn gap_spans_marks_broken_adjacency_with_segments_predicate() {
+        let points = [(0, 1.0), (10, 2.0), (40, 3.0), (50, 4.0), (90, 5.0)];
+        assert_eq!(gap_spans(&points, 15), vec![(10, 40), (50, 90)]);
+        assert!(gap_spans(&points[..1], 15).is_empty());
+        assert!(gap_spans(&[], 15).is_empty());
+    }
+
+    #[test]
+    fn merge_spans_unions_overlapping_touching_and_identical() {
+        assert_eq!(
+            merge_spans(vec![(10, 20), (30, 40), (5, 12), (20, 25), (5, 12)]),
+            vec![(5, 25), (30, 40)]
+        );
+        assert_eq!(merge_spans(vec![(7, 9)]), vec![(7, 9)]);
+        assert!(merge_spans(Vec::new()).is_empty());
     }
 }
