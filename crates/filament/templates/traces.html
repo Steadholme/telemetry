@@ -1,24 +1,54 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en"{{THEME_ATTR}}>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="light">
-  <title>Traces · Filament · Steadholme</title>
-  <style>{{CSS}}</style>
+  <meta name="color-scheme" content="{{COLOR_SCHEME}}">
+  <title>Distributed traces · Telemetry · Steadholme</title>
+  <link rel="stylesheet" href="{{CSS_PATH}}">
 </head>
-<body class="page-console">
-{{TOPBAR}}
-<main class="console">
-  <div class="console__head">
-    <h1>Distributed traces</h1>
-    <p class="sub">Spans collapsed into traces across the estate. Pick one to open its waterfall.</p>
+<body class="page-v2">
+{{APPBAR}}
+<main class="v2-page">
+  <header class="pagehead">
+    <div class="pagehead__titles">
+      <h1>Distributed traces</h1>
+      <p class="pagehead__sub">{{HEAD_SUB}}</p>
+    </div>
+    <div class="pagehead__actions">
+      <a class="btn btn-secondary" href="{{REFRESH_HREF}}">{{ICON_REFRESH}}Refresh</a>
+    </div>
+  </header>
+
+  <section class="tiles">
+    <div class="tile"><span class="tile__value">{{T_TRACES}}</span><span class="tile__label">traces</span></div>
+    <div class="tile"><span class="tile__value">{{T_SERVICES}}</span><span class="tile__label">services</span></div>
+    <div class="tile {{T_ERROR_CLASS}}"><span class="tile__value">{{T_ERRORS}}</span><span class="tile__label">errors</span></div>
+    <div class="tile tile--mark"><span class="tile__value">{{T_P95}}</span><span class="tile__label">p95</span></div>
+  </section>
+
+  <div class="two-col">
+    <div class="two-col__main">
+      <section class="card">
+        <div class="card__head"><h2>Traces</h2><span class="card__count">{{TRACE_COUNT}}</span></div>
+        {{FILTERS}}
+        <p class="card__caption">{{SUMMARY}}</p>
+        {{ROWS}}
+      </section>
+    </div>
+    <aside class="two-col__rail">
+      <section class="card">
+        <div class="card__head"><h2>Services</h2><span class="card__count">{{SERVICE_COUNT}}</span></div>
+        {{SERVICES}}
+      </section>
+      <section class="card">
+        <div class="card__head"><h2>Slowest</h2></div>
+        {{SLOWEST}}
+      </section>
+    </aside>
   </div>
-  {{FILTERS}}
-  <div class="list-summary muted">{{SUMMARY}}</div>
-  <div class="trace-list">
-    {{ROWS}}
-  </div>
+
+  {{FOOTER}}
 </main>
 </body>
 </html>

@@ -1,57 +1,61 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en"{{THEME_ATTR}}>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="light">
-  <title>Sift · Steadholme</title>
-  <style>{{CSS}}</style>
+  <meta name="color-scheme" content="{{COLOR_SCHEME}}">
+  <title>Log search · Telemetry · Steadholme</title>
+  <link rel="stylesheet" href="{{CSS_PATH}}">
 </head>
-<body class="page-ops">
-{{TOPBAR}}
-<main class="ops">
-  <div class="ops__head">
-    <div>
-      <h1 class="ops__title">Log search</h1>
-      <p class="ops__sub">Aggregated logs across the estate, clustered into message templates.</p>
+<body class="page-v2">
+{{APPBAR}}
+<main class="v2-page">
+  <header class="pagehead">
+    <div class="pagehead__titles">
+      <h1>Log search</h1>
+      <p class="pagehead__sub">{{HEAD_SUB}}</p>
     </div>
-    <div class="stats">
-      <div class="sift-stat"><span class="sift-stat__num">{{STAT_LOGS}}</span><span class="sift-stat__label">logs</span></div>
-      <div class="sift-stat"><span class="sift-stat__num">{{STAT_TEMPLATES}}</span><span class="sift-stat__label">templates</span></div>
-      <div class="sift-stat"><span class="sift-stat__num">{{STAT_RESULTS}}</span><span class="sift-stat__label">results</span></div>
+    <div class="pagehead__actions">
+      <a class="btn btn-secondary" href="{{REFRESH_HREF}}">{{ICON_REFRESH}}Refresh</a>
     </div>
-  </div>
+  </header>
 
-  {{FILTER_BAR}}
-  {{ACTIVE_FILTER}}
+  <section class="tiles">
+    <div class="tile"><span class="tile__value">{{T_LOGS}}</span><span class="tile__label">logs</span></div>
+    <div class="tile"><span class="tile__value">{{T_TEMPLATES}}</span><span class="tile__label">templates</span></div>
+    <div class="tile tile--mark"><span class="tile__value">{{T_RESULTS}}</span><span class="tile__label">results</span></div>
+    <div class="tile"><span class="tile__value">{{T_HOSTS}}</span><span class="tile__label">hosts</span></div>
+  </section>
 
-  <div class="ops__grid">
-    <section class="logpanel card">
-      <table class="logtable">
-        <thead>
-          <tr>
-            <th class="col-time">Time (UTC)</th>
-            <th class="col-sev">Severity</th>
-            <th class="col-host">Host</th>
-            <th class="col-app">App</th>
-            <th class="col-msg">Message</th>
-          </tr>
-        </thead>
-        <tbody>
-          {{ROWS}}
-        </tbody>
-      </table>
-      {{PAGER}}
-    </section>
+  <div class="two-col">
+    <div class="two-col__main">
+      <section class="card">
+        <div class="card__head"><h2>Logs</h2><span class="card__count">{{RANGE_LABEL}}</span></div>
+        {{FILTER_BAR}}
+        {{ACTIVE_FILTER}}
+        <div class="table-scroll">
+          <table class="logs">
+            <thead><tr><th class="c-time">Time (UTC)</th><th class="c-sev">Severity</th><th class="c-host">Host</th><th class="c-app">App</th><th class="c-msg">Message</th></tr></thead>
+            <tbody>{{ROWS}}</tbody>
+          </table>
+        </div>
+        {{PAGER}}
+      </section>
+    </div>
 
-    <aside class="sidepanel card">
-      <h2 class="panel__title">Top templates</h2>
-      <p class="panel__hint">Click a template to filter the table to that message shape.</p>
-      <div class="tmpl-list">
+    <aside class="two-col__rail">
+      <section class="card">
+        <div class="card__head"><h2>Top templates</h2><span class="card__count">{{TEMPLATE_COUNT}}</span></div>
         {{TEMPLATES}}
-      </div>
+      </section>
+      <section class="card">
+        <div class="card__head"><h2>Severity · 24 h</h2></div>
+        {{SEVERITY_BARS}}
+      </section>
     </aside>
   </div>
+
+  {{FOOTER}}
 </main>
 </body>
 </html>

@@ -97,6 +97,10 @@ pub trait Store: Send + Sync {
 
     /// Total distinct templates (a dashboard headline stat).
     async fn count_templates(&self) -> Result<i64, StoreError>;
+
+    /// Counts per severity for logs at or after `since` (epoch seconds). Drives the severity
+    /// breakdown beside the table; read-only.
+    async fn severity_counts(&self, since: i64) -> Result<Vec<(String, i64)>, StoreError>;
 }
 
 // --------------------------------------------------------------------------------------
@@ -188,6 +192,18 @@ impl Store for InMemoryStore {
             .lock()
             .expect("templates lock poisoned")
             .len() as i64)
+    }
+
+    async fn severity_counts(&self, since: i64) -> Result<Vec<(String, i64)>, StoreError> {
+        let logs = self.logs.lock().expect("logs lock poisoned");
+        let mut counts: Vec<(String, i64)> = Vec::new();
+        for log in logs.iter().filter(|log| log.ts >= since) {
+            match counts.iter_mut().find(|(name, _)| *name == log.severity) {
+                Some((_, n)) => *n += 1,
+                None => counts.push((log.severity.clone(), 1)),
+            }
+        }
+        Ok(counts)
     }
 }
 
@@ -455,6 +471,18 @@ impl PgStore {
         }
     }
 
+    async fn severity_counts_async(&self, since: i64) -> Result<Vec<(String, i64)>, sqlx::Error> {
+        let rows = sqlx::query(
+            "SELECT severity, COUNT(*) AS n FROM logs WHERE ts >= $1 GROUP BY severity",
+        )
+        .bind(since)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter()
+            .map(|row| Ok((row.try_get("severity")?, row.try_get("n")?)))
+            .collect()
+    }
+
     async fn count_async(&self, table: &str) -> Result<i64, sqlx::Error> {
         // `table` is a fixed internal literal (`logs` | `templates`), never user input.
         let sql = format!("SELECT COUNT(*) AS n FROM {table}");
@@ -503,6 +531,12 @@ impl Store for PgStore {
 
     async fn count_templates(&self) -> Result<i64, StoreError> {
         self.count_async("templates")
+            .await
+            .map_err(|e| StoreError::Backend(e.to_string()))
+    }
+
+    async fn severity_counts(&self, since: i64) -> Result<Vec<(String, i64)>, StoreError> {
+        self.severity_counts_async(since)
             .await
             .map_err(|e| StoreError::Backend(e.to_string()))
     }

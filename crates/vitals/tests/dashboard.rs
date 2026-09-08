@@ -13,10 +13,40 @@ async fn get_html(state: &AppState, with_email: Option<&str>) -> (StatusCode, St
     if let Some(e) = with_email {
         b = b.header("x-auth-email", e);
     }
-    let resp = app(state.clone()).oneshot(b.body(Body::empty()).unwrap()).await.unwrap();
+    let resp = app(state.clone())
+        .oneshot(b.body(Body::empty()).unwrap())
+        .await
+        .unwrap();
     let status = resp.status();
-    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
     (status, String::from_utf8(bytes.to_vec()).unwrap())
+}
+
+#[tokio::test]
+async fn stylesheet_is_public_and_immutable() {
+    let response = app(build_dev_state())
+        .oneshot(
+            Request::builder()
+                .uri("/assets/vitals-20260908.css")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get(header::CACHE_CONTROL).unwrap(),
+        "public, max-age=31536000, immutable"
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get(header::X_CONTENT_TYPE_OPTIONS)
+            .unwrap(),
+        "nosniff"
+    );
 }
 
 #[tokio::test]
@@ -24,10 +54,11 @@ async fn empty_dashboard_renders_brand_and_empty_state() {
     let state = build_dev_state();
     let (status, html) = get_html(&state, None).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(html.contains("Steadholme"), "brand wordmark present");
     assert!(html.contains("Vitals"), "app name present");
     assert!(html.contains("/_gw/auth/logout"), "logout link to gateway");
-    assert!(html.contains("无读数 · No readings"), "empty state shown");
+    assert!(html.contains("No readings"), "empty state shown");
+    assert!(html.contains("/assets/vitals-20260908.css"));
+    assert!(!html.contains("<style>"));
 }
 
 #[tokio::test]
@@ -35,25 +66,31 @@ async fn dashboard_shows_host_gauges_and_injected_email() {
     let state = build_dev_state();
     let now = now_secs();
     // Seed one fresh host across the headline metrics + a short cpu series.
-    state.store.insert_samples(
-        "edge-1",
-        &[
-            Sample::new("cpu_pct", 73.2, now - 20),
-            Sample::new("cpu_pct", 81.0, now - 10),
-            Sample::new("cpu_pct", 64.5, now),
-            Sample::new("mem_pct", 55.0, now),
-            Sample::new("disk_pct", 42.0, now),
-            Sample::new("load1", 1.25, now),
-            Sample::new("mem_used_bytes", 8_000_000_000.0, now),
-            Sample::new("mem_total_bytes", 16_000_000_000.0, now),
-            Sample::new("uptime_secs", 90_061.0, now),
-        ],
-    ).await;
+    state
+        .store
+        .insert_samples(
+            "edge-1",
+            &[
+                Sample::new("cpu_pct", 73.2, now - 20),
+                Sample::new("cpu_pct", 81.0, now - 10),
+                Sample::new("cpu_pct", 64.5, now),
+                Sample::new("mem_pct", 55.0, now),
+                Sample::new("disk_pct", 42.0, now),
+                Sample::new("load1", 1.25, now),
+                Sample::new("mem_used_bytes", 8_000_000_000.0, now),
+                Sample::new("mem_total_bytes", 16_000_000_000.0, now),
+                Sample::new("uptime_secs", 90_061.0, now),
+            ],
+        )
+        .await;
 
     let (status, html) = get_html(&state, Some("ops@steadholme.local")).await;
     assert_eq!(status, StatusCode::OK);
     // Injected identity shows in the app-bar.
-    assert!(html.contains("ops@steadholme.local"), "signed-in email rendered");
+    assert!(
+        html.contains("ops@steadholme.local"),
+        "signed-in email rendered"
+    );
     // Host + its latest gauge values are present.
     assert!(html.contains("edge-1"), "host name rendered");
     assert!(html.contains("64.5%"), "latest cpu value rendered");
@@ -63,7 +100,9 @@ async fn dashboard_shows_host_gauges_and_injected_email() {
     // Human-readable memory figure.
     assert!(html.contains("GiB"), "memory figure humanized");
     // The empty state is gone.
-    assert!(!html.contains("无读数 · No readings"));
+    assert!(!html.contains("No readings"));
+    assert!(html.contains("class=\"vt-matrix\""));
+    assert!(html.contains("class=\"vt-host__signal\""));
 }
 
 #[tokio::test]
@@ -86,7 +125,10 @@ async fn ingest_then_dashboard_reflects_it() {
         .method("POST")
         .uri("/ingest")
         .header(header::CONTENT_TYPE, "application/json")
-        .header(header::AUTHORIZATION, format!("Bearer {DEFAULT_INGEST_TOKEN}"))
+        .header(
+            header::AUTHORIZATION,
+            format!("Bearer {DEFAULT_INGEST_TOKEN}"),
+        )
         .body(Body::from(body.to_string()))
         .unwrap();
     let resp = app(state.clone()).oneshot(req).await.unwrap();

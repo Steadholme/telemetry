@@ -163,3 +163,15 @@ docker run --rm \
 - **探针**：以独立容器运行 `vitals-agent`，挂载宿主 `/proc`、`/sys`、`/` 为只读
   （`HOST_PROC=/host/proc` 等），与服务端共用同一 `INGEST_TOKEN`，`SERVER_URL` 指向
   `http://vitals-server:8300`。探针容器无监听端口，应禁用 HEALTHCHECK。
+
+## 前端 v2（2026-09-08）
+
+Fleet 与 Host detail 按 Figma 文件 `aJo6MIddG56vwOZoCIC8fB`（Telemetry，midnight accent）重做。
+`vt-*` 类名与所有可访问性契约（SVG 可访问名、真实间隙几何、bidi 隔离）保持不变，
+换的是它们的表现层：套件栏（Logs / Traces / Vitals 三个 vhost 一条导航）、状态摘要瓦片、
+主机矩阵（状态 chip + 五条 spark + 偏差计数）、主机侧栏、图表卡（阈值 / 间隙 / 预测 / 异常图例
+＋ latest·min·avg·max 条）、统计偏差表。
+
+Vitals 重新挂回 `odyssey` 基底：`/assets/vitals-20260908.css` = Odyssey 规范层 + 本 crate 的
+`static/service.css`，与 Sift、Filament 同一套系统。改样式时同步提升该路径里的日期
+（`tests/dashboard.rs` 与 `tests/physiograph_gate.rs` 会断言路径）。

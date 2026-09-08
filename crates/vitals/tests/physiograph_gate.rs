@@ -77,7 +77,7 @@ fn enclosing_section<'a>(html: &'a str, marker: &str) -> &'a str {
         .find(marker)
         .unwrap_or_else(|| panic!("missing section marker {marker}"));
     let start = html[..marker_pos]
-        .rfind(r#"<section class="card vt-section""#)
+        .rfind(r#"<section class="vt-section""#)
         .unwrap_or_else(|| panic!("missing section start for {marker}"));
     let relative_end = html[marker_pos..]
         .find("</section>")
@@ -206,12 +206,8 @@ async fn bounded_copy_and_window_scoped_quiet_state_replace_liveness_claims() {
     let empty = get_html(&state, "/").await;
     let empty_body = body_markup(&empty);
     assert!(!empty.contains("<script"));
-    assert!(empty_body.contains("无读数 · No readings"));
-    assert!(empty_body
-        .contains("当前没有可显示的探针样本：可能尚未收到任何上报，也可能是测量存储暂不可达。"));
-    assert!(empty_body.contains(
-        "No probe samples to display — either nothing has been reported yet, or the measurement store is temporarily unreachable."
-    ));
+    assert!(empty_body.contains("No readings"));
+    assert!(empty_body.contains("Start vitals-agent to populate the fleet."));
     assert_no_liveness_claim(empty_body);
     assert_no_internal_material(empty_body);
 
@@ -224,15 +220,14 @@ async fn bounded_copy_and_window_scoped_quiet_state_replace_liveness_claims() {
         let html = get_html(&state, &format!("/?range={range}")).await;
         let body = body_markup(&html);
         assert!(!html.contains("<script"));
-        assert!(body.contains(
-            "各主机探针的有界采样读数 · Bounded probe readings — latest sample, not live."
-        ));
-        assert!(body.contains("新鲜主机 · Fresh hosts"));
-        assert!(body.contains("异常记录 · Anomaly ledger"));
-        assert!(body.contains(&format!(
-            "所选窗口（{range}）内未记录异常事件 · No anomaly events recorded in the selected window ({range})"
-        )));
-        assert!(body.contains("自基线 self-baseline"));
+        assert!(body.contains(r#"class="vt-matrix""#));
+        assert!(body.contains(r#"class="vt-summary""#));
+        assert!(body.contains(r#"aria-label="Time range""#));
+        assert!(body.contains("Statistical deviations"));
+        assert!(body.contains(&format!("No deviations in {range}")));
+        assert!(body.contains("Updated "));
+        assert!(body.contains("UTC"));
+        assert!(body.contains(">Refresh</a>"));
         assert_no_liveness_claim(body);
         assert_no_internal_material(body);
     }
@@ -244,8 +239,8 @@ async fn freshness_and_partial_metric_states_are_textual_and_never_zero_filled()
     let now = now_secs();
     for (host, age, value) in [
         ("fresh-probe", 30, 41.0),
-        ("recent-probe", 300, 52.0),
-        ("stale-probe", 1200, 63.0),
+        ("recent-probe", 300, 75.0),
+        ("stale-probe", 1200, 95.0),
     ] {
         state
             .store
@@ -255,12 +250,12 @@ async fn freshness_and_partial_metric_states_are_textual_and_never_zero_filled()
 
     let html = get_html(&state, "/").await;
     let body = body_markup(&html);
-    assert!(body.contains("新鲜 · fresh"));
-    assert!(body.contains("近期 · "));
-    assert!(body.contains("陈旧 · "));
+    assert!(body.contains("vt-host--healthy"));
+    assert!(body.contains("vt-host--warning"));
     assert!(body.contains("vt-host--stale"));
-    assert!(body.contains(r#"data-state="unknown""#));
-    assert!(body.contains("未上报 · not reported"));
+    assert!(body.contains("CPU 75.0%"));
+    assert!(body.contains("No report for"));
+    assert!(body.contains(">—</span>"));
     assert!(
         !body.contains("width:0.0%"),
         "missing metric was rendered as zero"
@@ -289,7 +284,7 @@ async fn detail_geometry_keeps_real_vertices_and_merges_gap_union() {
                 .contains("gaps present"),
             "{id} accessible name must disclose its rendered gap"
         );
-        assert!(svg.contains("gap · 缺测") || body.contains("gap · 缺测"));
+        assert!(svg.contains("Missing data") || body.contains("Missing data"));
     }
 
     let cpu = svg_by_id(body, "vt-fld-cpu");
@@ -374,24 +369,24 @@ async fn hostile_identity_is_escaped_and_semantic_hooks_remain_intact() {
     seed_gap_fixture(&state, hostile, now).await;
     let uri = format!("/?host={}&range=1h", percent_encode(hostile));
     let html = get_html(&state, &uri).await;
+    let css = get_html(&state, "/assets/vitals-20260908.css").await;
     let body = body_markup(&html);
 
     assert!(!body.contains("<script>alert(1)</script>"));
     assert!(body.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
-    assert!(html.contains("unicode-bidi:isolate"));
-    assert_eq!(body.matches(r#"class="card vt-section""#).count(), 5);
-    for title in [
-        "处理器 · CPU",
-        "内存 · Memory",
-        "磁盘 · Disk",
-        "负载 · Load",
-        "网络 · Network",
-    ] {
-        assert!(body.contains(title), "missing field title {title}");
+    assert!(html.contains("/assets/vitals-20260908.css"));
+    assert!(css.contains("unicode-bidi: isolate"));
+    assert_eq!(body.matches(r#"class="vt-section""#).count(), 5);
+    for title in ["CPU", "Memory", "Disk", "Load", "Network"] {
+        assert!(
+            body.contains(&format!(">{title}</h2>")),
+            "missing field title {title}"
+        );
     }
-    assert!(body.contains("tabs--window"));
+    assert!(body.contains(r#"class="vt-range""#));
     assert!(body.contains(r#"aria-current="page""#));
-    assert!(body.contains(r#"aria-label="breadcrumb""#));
+    assert!(body.contains(r#"class="vt-hostrail""#));
+    assert!(body.contains(r#"class="vt-workbench""#));
     assert!(body.contains(r##"href="#vt-main""##));
     assert!(body.contains("<polyline"));
     assert_no_liveness_claim(body);

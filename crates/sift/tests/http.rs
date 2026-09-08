@@ -26,6 +26,28 @@ fn log(id: &str, ts: i64, host: &str, app: &str, severity: &str, message: &str) 
 }
 
 #[tokio::test]
+async fn stylesheet_is_public_and_immutable() {
+    let res = sift::app(build_dev_state())
+        .oneshot(
+            Request::builder()
+                .uri("/assets/sift-20260908.css")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(
+        res.headers().get(header::CACHE_CONTROL).unwrap(),
+        "public, max-age=31536000, immutable"
+    );
+    assert_eq!(
+        res.headers().get(header::X_CONTENT_TYPE_OPTIONS).unwrap(),
+        "nosniff"
+    );
+}
+
+#[tokio::test]
 async fn healthz_is_public_ok() {
     let app = sift::app(build_dev_state());
     let res = app
@@ -180,4 +202,6 @@ async fn dashboard_renders_html() {
     let html = body_to_string(&bytes);
     assert!(html.contains("Steadholme"));
     assert!(html.contains("Top templates"));
+    assert!(html.contains("/assets/sift-20260908.css"));
+    assert!(!html.contains("<style>"));
 }

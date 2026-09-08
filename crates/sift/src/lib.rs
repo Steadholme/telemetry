@@ -53,6 +53,7 @@ pub struct AppState {
 pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(handlers::health::healthz))
+        .route(handlers::APP_CSS_PATH, get(handlers::app_css_asset))
         .route("/", get(handlers::dashboard::index))
         .route("/api/search", get(handlers::dashboard::api_search))
         .route("/ingest", post(handlers::ingest::ingest))
@@ -86,9 +87,7 @@ pub async fn build_state_from_env() -> Result<AppState, String> {
         "postgres" => {
             let database_url = env_nonempty("SIFT_DATABASE_URL")
                 .or_else(|| env_nonempty("DATABASE_URL"))
-                .ok_or_else(|| {
-                    "SIFT_STORE=postgres requires SIFT_DATABASE_URL".to_string()
-                })?;
+                .ok_or_else(|| "SIFT_STORE=postgres requires SIFT_DATABASE_URL".to_string())?;
             tracing::info!("SIFT_STORE=postgres — connecting to database");
             let pg = PgStore::connect(&database_url)
                 .await

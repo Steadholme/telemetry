@@ -54,6 +54,7 @@ pub struct AppState {
 pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(handlers::health::healthz))
+        .route(handlers::APP_CSS_PATH, get(handlers::app_css_asset))
         // --- SSO dashboard ---
         .route("/", get(handlers::dashboard::index))
         .route("/trace/{trace_id}", get(handlers::dashboard::waterfall))
@@ -90,7 +91,9 @@ pub async fn build_state_from_env() -> Result<AppState, String> {
         "postgres" => {
             let database_url = env_nonempty("FILAMENT_DATABASE_URL")
                 .or_else(|| env_nonempty("DATABASE_URL"))
-                .ok_or_else(|| "FILAMENT_STORE=postgres requires FILAMENT_DATABASE_URL".to_string())?;
+                .ok_or_else(|| {
+                    "FILAMENT_STORE=postgres requires FILAMENT_DATABASE_URL".to_string()
+                })?;
             tracing::info!("FILAMENT_STORE=postgres — connecting to database");
             let pg = PgStore::connect(&database_url)
                 .await
@@ -102,7 +105,11 @@ pub async fn build_state_from_env() -> Result<AppState, String> {
             Arc::new(pg)
         }
         "memory" => Arc::new(InMemoryStore::new()),
-        other => return Err(format!("unknown FILAMENT_STORE={other} (use memory|postgres)")),
+        other => {
+            return Err(format!(
+                "unknown FILAMENT_STORE={other} (use memory|postgres)"
+            ))
+        }
     };
 
     let audit = AuditSink::start(

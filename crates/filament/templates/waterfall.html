@@ -1,26 +1,50 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en"{{THEME_ATTR}}>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="light">
-  <title>Trace {{TRACE_ID}} · Filament · Steadholme</title>
-  <style>{{CSS}}</style>
+  <meta name="color-scheme" content="{{COLOR_SCHEME}}">
+  <title>Trace {{TRACE_ID}} · Telemetry · Steadholme</title>
+  <link rel="stylesheet" href="{{CSS_PATH}}">
 </head>
-<body class="page-console">
-{{TOPBAR}}
-<main class="console">
-  <a class="back-link" href="/">&larr; All traces</a>
-  <div class="console__head">
-    <h1 class="trace-title">Trace <span class="mono">{{TRACE_ID}}</span></h1>
-    <p class="sub">{{META}}</p>
-  </div>
-  <div class="legend">{{LEGEND}}</div>
-  <div class="card">
-    <div class="card__body waterfall">
-      {{ROWS}}
+<body class="page-v2">
+{{APPBAR}}
+<main class="v2-page">
+  <nav class="crumb" aria-label="Breadcrumb"><a href="/">All traces</a><span class="crumb__sep">/</span><span class="crumb__here">{{TRACE_ID}}</span></nav>
+  <header class="pagehead">
+    <div class="pagehead__titles">
+      <h1 class="mono-title">Trace {{TRACE_ID}}</h1>
+      <div class="tags">{{TRACE_PILLS}}</div>
     </div>
+    <div class="pagehead__actions">
+      <a class="btn btn-secondary" href="{{LOGS_HREF}}">{{ICON_EXTERNAL}}Open in logs</a>
+    </div>
+  </header>
+
+  {{BANNER}}
+
+  <div class="two-col">
+    <div class="two-col__main">
+      <section class="card">
+        <div class="card__head"><h2>Waterfall</h2><span class="card__count">{{SPAN_COUNT}}</span></div>
+        <div class="card__pad"><div class="legend">{{LEGEND}}</div></div>
+        {{RULER}}
+        <div class="wf">{{ROWS}}</div>
+      </section>
+    </div>
+    <aside class="two-col__rail">
+      <section class="card">
+        <div class="card__head"><h2>Trace</h2></div>
+        {{TRACE_DEFS}}
+      </section>
+      <section class="card">
+        <div class="card__head"><h2>Slowest spans</h2></div>
+        {{SLOWEST_SPANS}}
+      </section>
+    </aside>
   </div>
+
+  {{FOOTER}}
 </main>
 </body>
 </html>

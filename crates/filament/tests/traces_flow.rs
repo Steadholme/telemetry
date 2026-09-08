@@ -11,6 +11,26 @@ use filament::{app, build_dev_state};
 use tower::ServiceExt;
 
 #[tokio::test]
+async fn stylesheet_is_public_and_immutable() {
+    let response = app(build_dev_state())
+        .oneshot(get("/assets/filament-20260908.css"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get(header::CACHE_CONTROL).unwrap(),
+        "public, max-age=31536000, immutable"
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get(header::X_CONTENT_TYPE_OPTIONS)
+            .unwrap(),
+        "nosniff"
+    );
+}
+
+#[tokio::test]
 async fn full_trace_flow_in_memory() {
     let state = build_dev_state();
 
@@ -21,7 +41,12 @@ async fn full_trace_flow_in_memory() {
     // --- empty dashboard ---------------------------------------------------
     let (status, body) = call(&state, get("/")).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(body.contains("No traces yet"), "empty dashboard placeholder");
+    assert!(
+        body.contains("No trace matches this filter"),
+        "empty dashboard placeholder"
+    );
+    assert!(body.contains("/assets/filament-20260908.css"));
+    assert!(!body.contains("<style>"));
 
     // --- ingest without bearer -> 401 --------------------------------------
     let flat = r#"[
@@ -38,7 +63,10 @@ async fn full_trace_flow_in_memory() {
     // --- real flat ingest --------------------------------------------------
     let (status, body) = call(&state, post_ingest(flat, Some(DEFAULT_INGEST_TOKEN))).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(body.contains("\"accepted\":2"), "two spans accepted: {body}");
+    assert!(
+        body.contains("\"accepted\":2"),
+        "two spans accepted: {body}"
+    );
 
     // --- dashboard lists the trace, with the error badge -------------------
     let (status, body) = call(&state, get("/")).await;
@@ -49,9 +77,15 @@ async fn full_trace_flow_in_memory() {
 
     // --- filter by service: a match keeps it, a miss drops it --------------
     let (_, body) = call(&state, get("/?service=gateway")).await;
-    assert!(body.contains("GET /checkout"), "service filter matches root service");
+    assert!(
+        body.contains("GET /checkout"),
+        "service filter matches root service"
+    );
     let (_, body) = call(&state, get("/?service=nope")).await;
-    assert!(!body.contains("GET /checkout"), "non-matching service filtered out");
+    assert!(
+        !body.contains("GET /checkout"),
+        "non-matching service filtered out"
+    );
 
     // --- filter by min duration (trace total is 8ms) -----------------------
     let (_, body) = call(&state, get("/?min_ms=5")).await;
@@ -64,8 +98,11 @@ async fn full_trace_flow_in_memory() {
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("GET /checkout"));
     assert!(body.contains("SELECT carts"));
-    assert!(body.contains("wf-bar--error"), "error span bar styled");
-    assert!(body.contains("padding-left:14px"), "child span indented one level");
+    assert!(body.contains("wf__bar--error"), "error span bar styled");
+    assert!(
+        body.contains("padding-left:14px"),
+        "child span indented one level"
+    );
 
     // --- missing trace -> 404 ----------------------------------------------
     let (status, _) = call(&state, get("/trace/does-not-exist")).await;
@@ -104,7 +141,10 @@ async fn otlp_ingest_is_accepted() {
     let (_, body) = call(&state, get("/")).await;
     assert!(body.contains("POST /pay"));
     assert!(body.contains("checkout"));
-    assert!(body.contains("3.0ms"), "nanos converted to a 3ms duration: {body}");
+    assert!(
+        body.contains("3.0ms"),
+        "nanos converted to a 3ms duration: {body}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -114,7 +154,9 @@ async fn otlp_ingest_is_accepted() {
 async fn call(state: &filament::AppState, req: Request<Body>) -> (StatusCode, String) {
     let resp = app(state.clone()).oneshot(req).await.unwrap();
     let status = resp.status();
-    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
     (status, String::from_utf8_lossy(&bytes).to_string())
 }
 

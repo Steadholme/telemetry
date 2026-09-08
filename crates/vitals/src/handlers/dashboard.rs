@@ -84,6 +84,11 @@ pub async fn dashboard(
         .and_then(|v| v.to_str().ok())
         .filter(|s| !s.is_empty())
         .unwrap_or("—");
+    let theme = odyssey::resolve_theme(
+        headers
+            .get(axum::http::header::COOKIE)
+            .and_then(|value| value.to_str().ok()),
+    );
 
     let now = now_secs();
     let range = Range::parse(q.range.as_deref());
@@ -118,6 +123,7 @@ pub async fn dashboard(
                 &buckets,
                 &anomalies,
                 email,
+                theme,
                 now,
                 since,
                 range.label(),
@@ -127,13 +133,14 @@ pub async fn dashboard(
                 state.config.window,
             ));
         }
-        return Html(render_unknown_host(email));
+        return Html(render_unknown_host(email, theme));
     }
 
     Html(render(
         &hosts,
         &anomalies,
         email,
+        theme,
         now,
         since,
         range.label(),
@@ -243,9 +250,9 @@ mod tests {
             .await
             .unwrap();
         let html = String::from_utf8(bytes.to_vec()).unwrap();
-        assert!(html.contains("未知主机 · Unknown host"));
+        assert!(html.contains("Unknown host"));
         assert!(!html.contains("<script>"));
-        assert!(!html.contains("无读数 · No readings"));
+        assert!(!html.contains("No readings"));
     }
 
     #[tokio::test]
@@ -295,13 +302,15 @@ mod tests {
             .await
             .unwrap();
         let html = String::from_utf8(bytes.to_vec()).unwrap();
-        assert_eq!(html.matches("class=\"card vt-section\"").count(), 5);
-        assert!(html.contains("处理器 · CPU"));
-        assert!(html.contains("内存 · Memory"));
-        assert!(html.contains("磁盘 · Disk"));
-        assert!(html.contains("负载 · Load"));
-        assert!(html.contains("网络 · Network"));
-        assert!(html.contains("tabs--window"));
+        assert_eq!(html.matches("class=\"vt-section\"").count(), 5);
+        assert!(html.contains(">CPU</h2>"));
+        assert!(html.contains(">Memory</h2>"));
+        assert!(html.contains(">Disk</h2>"));
+        assert!(html.contains(">Load</h2>"));
+        assert!(html.contains(">Network</h2>"));
+        assert!(html.contains("class=\"vt-range\""));
+        assert!(html.contains("class=\"vt-workbench\""));
+        assert!(html.contains("class=\"vt-hostrail\""));
         assert!(html.contains("aria-current=\"page\""));
         assert!(html.contains("<polyline"));
     }

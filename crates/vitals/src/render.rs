@@ -2,28 +2,32 @@
 //!
 //! Pure functions: a `&[HostView]` + the signed-in email in, an HTML `String` out. The CSS
 //! is embedded (`include_str!`) so the slim image never misses an asset and the page is one
-//! self-contained document. The brand lockup, tokens, app-bar, cards, status pills and
-//! tables match the shared Steadholme enterprise design.
+//! self-contained document. Vitals owns the signal-matrix and host-workbench presentation;
+//! only the estate navigation endpoints are shared with other Steadholme products.
 
-use std::{collections::BTreeMap, sync::OnceLock};
+use std::collections::BTreeMap;
 
 use crate::analytics;
 use crate::chart::{self, Access, Domain, Line, SparkOpts, Tone};
+use crate::handlers::APP_CSS_PATH;
 use crate::metrics::{self, SampleRow};
 use crate::store::{Anomaly, Bucket};
 
 const SERVICE_CSS: &str = include_str!("../static/service.css");
-static APP_CSS: OnceLock<String> = OnceLock::new();
+static APP_CSS: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
-/// Full CSS payload: canonical Odyssey first, Vitals' service layer second.
+/// Canonical Odyssey base first, the Vitals service layer second — the same layering the other
+/// two Telemetry surfaces use, so one estate-wide design system reaches every vhost.
 pub fn app_css() -> &'static str {
-    APP_CSS.get_or_init(|| {
-        let mut css = String::with_capacity(odyssey::APP_CSS.len() + SERVICE_CSS.len() + 1);
-        css.push_str(odyssey::APP_CSS);
-        css.push('\n');
-        css.push_str(SERVICE_CSS);
-        css
-    })
+    APP_CSS
+        .get_or_init(|| {
+            let mut css = String::with_capacity(odyssey::APP_CSS.len() + SERVICE_CSS.len() + 1);
+            css.push_str(odyssey::APP_CSS);
+            css.push('\n');
+            css.push_str(SERVICE_CSS);
+            css
+        })
+        .as_str()
 }
 
 /// Everything the dashboard shows for one host.
@@ -39,6 +43,8 @@ pub struct HostView {
     pub spark_mem: Vec<(i64, f64)>,
     /// Recent disk_pct series (oldest -> newest) for the sparkline.
     pub spark_disk: Vec<(i64, f64)>,
+    /// Recent load1 series (oldest -> newest) for the fleet matrix.
+    pub spark_load: Vec<(i64, f64)>,
     /// Recent net_rx_bps series (oldest -> newest) for the sparkline.
     pub spark_net_rx: Vec<(i64, f64)>,
     /// Recent net_tx_bps series (oldest -> newest) for the sparkline.
@@ -106,6 +112,7 @@ pub fn build_host_views(
             metrics::M_CPU_PCT => hv.spark_cpu.push((r.ts, r.value)),
             metrics::M_MEM_PCT => hv.spark_mem.push((r.ts, r.value)),
             metrics::M_DISK_PCT => hv.spark_disk.push((r.ts, r.value)),
+            metrics::M_LOAD1 => hv.spark_load.push((r.ts, r.value)),
             metrics::M_NET_RX => hv.spark_net_rx.push((r.ts, r.value)),
             metrics::M_NET_TX => hv.spark_net_tx.push((r.ts, r.value)),
             _ => {}
@@ -165,6 +172,7 @@ pub fn render(
     hosts: &[HostView],
     anomalies: &[Anomaly],
     email: &str,
+    theme: &str,
     now: i64,
     since: i64,
     range_label: &str,
@@ -192,48 +200,61 @@ pub fn render(
         klaxon_ready,
         None,
     );
-    let summary = summary_strip(hosts, anomalies, since, now);
+    let summary = summary_strip(hosts, now);
     let rangebar = rangebar(None, range_label);
+    let snapshot = snapshot_controls(&format!("/?range={range_label}"), now);
+    let fresh = hosts.iter().filter(|host| now - host.last_ts <= 60).count();
+    let host_word = if hosts.len() == 1 { "host" } else { "hosts" };
 
     format!(
         r##"<!DOCTYPE html>
-<html lang="zh-CN" data-density="compact">
+<html lang="en" data-density="compact"{theme_attr}>
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="light">
-<title>Vitals · Steadholme</title>
-<style>{css}</style>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="{color_scheme}">
+<title>Fleet · Telemetry · Steadholme</title>
+<link rel="stylesheet" href="{css_path}">
 </head>
-<body>
-<a class="vt-skip sr-only" href="#vt-main">跳至读数 · Skip to readings</a>
-<header class="topbar">
-  <div class="topbar__inner">
-    <a class="brand" href="/" aria-label="Steadholme Vitals">
-      <span class="brand__glyph" aria-hidden="true">{shield}</span>
-      <span class="brand__word">Steadholme</span>
-    </a>
-    <div class="topbar__right">{userbox}</div>
-  </div>
-</header>
-<main class="wrap" id="vt-main">
-  <div class="page-head">
+<body class="page-v2 vt-app">
+<a class="vt-skip sr-only" href="#vt-main">Skip to fleet</a>
+{appbar}
+<main class="vt-shell" id="vt-main">
+  <header class="vt-pagehead">
     <div>
-      <h1>主机探针 · Host Vitals</h1>
-      <p class="muted">各主机探针的有界采样读数 · Bounded probe readings — latest sample, not live.</p>
+      <div class="vt-eyebrow">Infrastructure</div>
+      <h1>Fleet</h1>
+      <p class="vt-pagehead__meta">{host_count} {host_word} · {fresh} updated &lt;1m · scrape every {scrape} s</p>
     </div>
-  </div>
+    <div class="vt-pagehead__actions">{rangebar}{snapshot}</div>
+  </header>
   {summary}
-  {rangebar}
-  <section class="vt-fleet" aria-label="host readings · 主机读数">{cards}</section>
+  <section class="vt-matrix" aria-label="Hosts">
+    <div class="vt-matrix__head" aria-hidden="true">
+      <span>Host</span><span>CPU</span><span>Memory</span><span>Disk</span><span>Load</span><span>Network</span><span>Deviations</span>
+    </div>
+    <div class="vt-fleet">{cards}</div>
+  </section>
   {anomaly_panel}
+  {footer}
 </main>
 </body>
 </html>"##,
-        css = app_css(),
-        shield = SHIELD_SVG,
-        userbox = userbox(email),
+        css_path = APP_CSS_PATH,
+        theme_attr = odyssey::html_theme_attr(theme),
+        color_scheme = odyssey::color_scheme_meta(theme),
+        appbar = crate::handlers::suite_bar(
+            crate::handlers::SURFACE,
+            crate::handlers::SURFACE_HOST,
+            email
+        ),
+        footer = crate::handlers::FOOTER,
+        scrape = crate::config::DEFAULT_SCRAPE_INTERVAL,
+        host_count = hosts.len(),
+        host_word = host_word,
+        fresh = fresh,
         summary = summary,
+        snapshot = snapshot,
         rangebar = rangebar,
         anomaly_panel = anomaly_panel,
         cards = cards,
@@ -242,40 +263,40 @@ pub fn render(
 
 /// Distinct empty state for a `?host=` value that is not in the current host set. The raw query
 /// string is intentionally not echoed.
-pub fn render_unknown_host(email: &str) -> String {
+pub fn render_unknown_host(email: &str, theme: &str) -> String {
     format!(
         r##"<!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en"{theme_attr}>
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="light">
-<title>Vitals · Steadholme</title>
-<style>{css}</style>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="{color_scheme}">
+<title>Unknown host · Telemetry · Steadholme</title>
+<link rel="stylesheet" href="{css_path}">
 </head>
-<body>
-<a class="vt-skip sr-only" href="#vt-main">跳至读数 · Skip to readings</a>
-<header class="topbar">
-  <div class="topbar__inner">
-    <a class="brand" href="/" aria-label="Steadholme Vitals">
-      <span class="brand__glyph" aria-hidden="true">{shield}</span>
-      <span class="brand__word">Steadholme</span>
-    </a>
-    <div class="topbar__right">{userbox}</div>
-  </div>
-</header>
-<main class="wrap" id="vt-main">
-  <section class="card vitals-card vitals-card--empty">
-    <h2>未知主机 · Unknown host</h2>
-    <p class="muted">此主机不在当前探针集合中。返回总览查看已上报主机。</p>
-    <p><a class="btn btn-ghost btn-sm" href="/">返回总览</a></p>
+<body class="page-v2 vt-app">
+<a class="vt-skip sr-only" href="#vt-main">Skip to content</a>
+{appbar}
+<main class="vt-shell" id="vt-main">
+  <section class="vt-empty">
+    <div class="vt-empty__mark" aria-hidden="true">?</div>
+    <h1>Unknown host</h1>
+    <p>This host is not reporting to Vitals.</p>
+    <a class="vt-button" href="/">Back to fleet</a>
   </section>
+  {footer}
 </main>
 </body>
 </html>"##,
-        css = app_css(),
-        shield = SHIELD_SVG,
-        userbox = userbox(email),
+        css_path = APP_CSS_PATH,
+        theme_attr = odyssey::html_theme_attr(theme),
+        color_scheme = odyssey::color_scheme_meta(theme),
+        appbar = crate::handlers::suite_bar(
+            crate::handlers::SURFACE,
+            crate::handlers::SURFACE_HOST,
+            email
+        ),
+        footer = crate::handlers::FOOTER,
     )
 }
 
@@ -288,6 +309,7 @@ pub fn render_host_detail(
     buckets: &[Bucket],
     anomalies: &[Anomaly],
     email: &str,
+    theme: &str,
     now: i64,
     since: i64,
     range_label: &str,
@@ -297,24 +319,15 @@ pub fn render_host_detail(
     _window: usize,
 ) -> String {
     let Some(current) = hosts.iter().find(|h| h.host == host) else {
-        return render_unknown_host(email);
+        return render_unknown_host(email, theme);
     };
     let display = current.display_name.as_str();
     let age = now - current.last_ts;
-    let (pill_class, pill_text) = freshness_pill(age);
-    let idx = hosts.iter().position(|h| h.host == host).unwrap_or(0);
-    let prev = idx
-        .checked_sub(1)
-        .and_then(|i| hosts.get(i))
-        .map(|h| host_nav_link("← Prev", &h.host, range_label))
-        .unwrap_or_default();
-    let next = hosts
-        .get(idx + 1)
-        .map(|h| host_nav_link("Next →", &h.host, range_label))
-        .unwrap_or_default();
+    let status = host_status(current, now);
+    let status_reason = status_reason_markup(current, now);
     let sections = [
         metric_section(
-            "处理器 · CPU",
+            "CPU",
             current,
             buckets,
             anomalies,
@@ -327,7 +340,7 @@ pub fn render_host_detail(
             range_label,
         ),
         metric_section(
-            "内存 · Memory",
+            "Memory",
             current,
             buckets,
             anomalies,
@@ -340,7 +353,7 @@ pub fn render_host_detail(
             range_label,
         ),
         metric_section(
-            "磁盘 · Disk",
+            "Disk",
             current,
             buckets,
             anomalies,
@@ -353,7 +366,7 @@ pub fn render_host_detail(
             range_label,
         ),
         metric_section(
-            "负载 · Load",
+            "Load",
             current,
             buckets,
             anomalies,
@@ -366,7 +379,7 @@ pub fn render_host_detail(
             range_label,
         ),
         metric_section(
-            "网络 · Network",
+            "Network",
             current,
             buckets,
             anomalies,
@@ -381,76 +394,126 @@ pub fn render_host_detail(
     ]
     .join("");
     let events = host_eventline(host, anomalies, since, detect_secs, z_threshold, now);
+    let rail = host_rail(hosts, host, range_label, now);
+    let rangebar = rangebar(Some(host), range_label);
+    let refresh_href = format!("/?host={}&range={range_label}", pct_encode(host));
+    let snapshot = snapshot_controls(&refresh_href, now);
+    let host_id = host_id_block(display, host, "vt-host__id");
     format!(
         r##"<!DOCTYPE html>
-<html lang="zh-CN" data-density="compact">
+<html lang="en" data-density="compact"{theme_attr}>
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="light">
-<title>Vitals · Steadholme</title>
-<style>{css}</style>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="{color_scheme}">
+<title>{display} · Telemetry · Steadholme</title>
+<link rel="stylesheet" href="{css_path}">
 </head>
-<body>
-<a class="vt-skip sr-only" href="#vt-main">跳至读数 · Skip to readings</a>
-<header class="topbar">
-  <div class="topbar__inner">
-    <a class="brand" href="/" aria-label="Steadholme Vitals">
-      <span class="brand__glyph" aria-hidden="true">{shield}</span>
-      <span class="brand__word">Steadholme</span>
-    </a>
-    <div class="topbar__right">{userbox}</div>
+<body class="page-v2 vt-app">
+<a class="vt-skip sr-only" href="#vt-main">Skip to host details</a>
+{appbar}
+<main class="vt-shell vt-shell--detail" id="vt-main">
+  <div class="vt-workbench">
+    {rail}
+    <section class="vt-detailpane" aria-labelledby="vt-host-title">
+      <header class="vt-detailhead">
+        <div class="vt-detailhead__title">
+          <a class="vt-back" href="/">Fleet</a>
+          <h1 id="vt-host-title">{display}</h1>
+          {host_id}
+        </div>
+        <div class="vt-detailhead__state">
+          <span class="vt-status vt-status--{status_class}"><i aria-hidden="true"></i>{status_label}{status_reason}</span>
+          <span>{uptime}</span>
+          <span>Seen {last_seen} ago</span>
+          {snapshot}
+        </div>
+        {rangebar}
+      </header>
+      <div class="vt-detailquick" aria-label="Latest readings">
+        <div><span>CPU</span><strong>{cpu}</strong></div>
+        <div><span>Memory</span><strong>{mem}</strong></div>
+        <div><span>Disk</span><strong>{disk}</strong></div>
+        <div><span>Load</span><strong>{load}</strong></div>
+        <div class="vt-detailquick__network"><span>Network</span><strong>{network}</strong></div>
+      </div>
+      <div class="vt-detailcharts">{sections}</div>
+      {events}
+    </section>
   </div>
-</header>
-<main class="wrap" id="vt-main">
-  <nav class="breadcrumb" aria-label="breadcrumb"><a href="/">主机 Hosts</a> / <span aria-current="page">{display}</span></nav>
-  <div class="vt-detailhead">
-    {tile}
-    <div class="vt-detailhead__title">
-      <h1>{display}</h1>
-      <div class="vt-host__id mono" title="{host_attr}">{host}</div>
-    </div>
-    <div class="vt-detailhead__meta">
-      <span class="pill {pill_class} vt-fresh">{pill_text}</span>
-      <span class="pill pill--muted">{uptime}</span>
-      <span class="pill pill--muted">last seen {last_seen}</span>
-    </div>
-    <div class="vt-hostnav">{prev}{next}</div>
-  </div>
-  {rangebar}
-  {sections}
-  {events}
+  {footer}
 </main>
 </body>
 </html>"##,
-        css = app_css(),
-        shield = SHIELD_SVG,
-        userbox = userbox(email),
-        tile = odyssey::identity::letter_tile(display, host),
-        host = esc(host),
-        host_attr = esc(host),
+        css_path = APP_CSS_PATH,
+        theme_attr = odyssey::html_theme_attr(theme),
+        color_scheme = odyssey::color_scheme_meta(theme),
+        appbar = crate::handlers::suite_bar(
+            crate::handlers::SURFACE,
+            crate::handlers::SURFACE_HOST,
+            email
+        ),
+        footer = crate::handlers::FOOTER,
+        rail = rail,
+        host_id = host_id,
         display = esc(display),
-        pill_class = pill_class,
-        pill_text = esc(&pill_text),
+        status_class = status.class(),
+        status_label = status.label(),
+        status_reason = status_reason,
         uptime = esc(&current
             .g(metrics::M_UPTIME)
             .map(|v| human_uptime(v as i64))
             .unwrap_or_else(|| "—".to_string())),
-        last_seen = esc(&format!("{} 前", human_age(age))),
-        prev = prev,
-        next = next,
-        rangebar = rangebar(Some(host), range_label),
+        last_seen = esc(&human_age(age)),
+        snapshot = snapshot,
+        rangebar = rangebar,
+        cpu = esc(&pct_fmt(current.g(metrics::M_CPU_PCT))),
+        mem = esc(&pct_fmt(current.g(metrics::M_MEM_PCT))),
+        disk = esc(&pct_fmt(current.g(metrics::M_DISK_PCT))),
+        load = esc(&current
+            .g(metrics::M_LOAD1)
+            .map(|v| format!("{v:.2}"))
+            .unwrap_or_else(|| "—".to_string())),
+        network = esc(&net_now(current)),
         sections = sections,
         events = events,
     )
 }
 
-fn host_nav_link(label: &str, host: &str, range_label: &str) -> String {
-    let href = format!("/?host={}&range={}", pct_encode(host), range_label);
+fn host_rail(hosts: &[HostView], active_host: &str, range_label: &str, now: i64) -> String {
+    let links = hosts
+        .iter()
+        .map(|host| {
+            let status = host_status(host, now);
+            let current = if host.host == active_host { " is-active" } else { "" };
+            let aria = if host.host == active_host { r#" aria-current="page""# } else { "" };
+            let href = format!("/?host={}&range={}", pct_encode(&host.host), range_label);
+            let host_id = host_id_inline(&host.display_name, &host.host);
+            format!(
+                r#"<a class="vt-hostrail__item{current}" href="{href}"{aria}>
+  <span class="vt-statusdot vt-statusdot--{status_class}" aria-hidden="true"></span>
+  <span class="vt-hostrail__identity"><strong>{display}</strong>{host_id}</span>
+  <span class="vt-hostrail__readings"><span>CPU {cpu}</span><span>MEM {mem}</span><span>DISK {disk}</span></span>
+</a>"#,
+                current = current,
+                href = esc(&href),
+                aria = aria,
+                status_class = status.class(),
+                display = esc(&host.display_name),
+                host_id = host_id,
+                cpu = esc(&pct_fmt(host.g(metrics::M_CPU_PCT))),
+                mem = esc(&pct_fmt(host.g(metrics::M_MEM_PCT))),
+                disk = esc(&pct_fmt(host.g(metrics::M_DISK_PCT))),
+            )
+        })
+        .collect::<String>();
     format!(
-        r#"<a class="btn btn-ghost btn-sm" href="{href}">{label}</a>"#,
-        href = esc(&href),
-        label = esc(label),
+        r#"<aside class="vt-hostrail" aria-label="Hosts">
+  <div class="vt-hostrail__head"><span>Hosts</span><span>{count}</span></div>
+  <nav>{links}</nav>
+</aside>"#,
+        count = hosts.len(),
+        links = links,
     )
 }
 
@@ -515,15 +578,15 @@ fn metric_section(
     let subrow = section_subrow(host, primary_metric);
     let chart = chart_frame(primary_metric, primary_series, &domain, range, &svg);
     format!(
-        r#"<section class="card vt-section">
+        r#"<section class="vt-section">
   <div class="vt-section__head">
     <div>
       <h2 id="{title_id}">{title}</h2>
       {subrow}
     </div>
-    {stats}
   </div>
   {chart}
+  {stats}
   {legend}
 </section>"#,
         title_id = esc(&format!("{name_id}-title")),
@@ -614,11 +677,11 @@ fn chart_frame(
         r#"<div class="vt-chart">
   <div class="vt-chart__yaxis">{axis}</div>
   <div class="vt-chart__plot">{svg}</div>
-  <div class="vt-chart__xaxis"><span>{start}</span><span>读数时刻 · reading time</span></div>
+  <div class="vt-chart__xaxis"><span>{start} ago</span><span>Now</span></div>
 </div>"#,
         axis = axis,
         svg = svg,
-        start = esc(&format!("{} 前", human_age(range.1 - range.0))),
+        start = esc(&human_age(range.1 - range.0)),
     )
 }
 
@@ -673,15 +736,13 @@ fn legend_for(metrics: &[&str], domain: &Domain, has_gaps: bool, primary_empty: 
         }
     }
     if matches!(domain, Domain::Pct) {
-        items.push_str(r#"<span class="vt-legend__threshold"><i></i>90% 阈值 · threshold</span>"#);
+        items.push_str(r#"<span class="vt-legend__threshold"><i></i>90% threshold</span>"#);
     }
     if has_gaps {
-        items.push_str(r#"<span class="vt-legend__gap"><i></i>gap · 缺测</span>"#);
+        items.push_str(r#"<span class="vt-legend__gap"><i></i>Missing data</span>"#);
     }
     if primary_empty {
-        items.push_str(
-            r#"<span class="vt-legend__empty">窗口内无样本 · no samples in window</span>"#,
-        );
+        items.push_str(r#"<span class="vt-legend__empty">No samples in range</span>"#);
     }
     if items.is_empty() {
         String::new()
@@ -771,7 +832,7 @@ fn host_eventline(
   <div class="eventline__body">{value}</div>
 </li>"#,
                 dot = dot,
-                when = esc(&format!("{} 前", human_age(now - event.last_ts))),
+                when = esc(&format!("{} ago", human_age(now - event.last_ts))),
                 title = esc(&event.title),
                 z = esc(&format!("{:.2}", event.peak_z)),
                 value = esc(&event.value_text),
@@ -779,9 +840,9 @@ fn host_eventline(
         })
         .collect::<String>();
     format!(
-        r#"<section class="card vt-section">
-  <div class="vt-section__head"><h2>异常事件 · Events</h2></div>
-  <div class="card__body"><ol class="eventline">{items}</ol></div>
+        r#"<section class="vt-section vt-eventsline">
+  <div class="vt-section__head"><h2>Statistical deviations</h2></div>
+  <div class="vt-section__body"><ol class="eventline">{items}</ol></div>
 </section>"#,
         items = items,
     )
@@ -910,15 +971,15 @@ fn anomaly_watch(
     let crit = events.iter().filter(|e| e.tier == EventTier::Crit).count();
     let warn = events.len().saturating_sub(crit);
     let klaxon = if klaxon_ready {
-        r#"<span class="pill pill--muted">已接 Klaxon 推送</span>"#
+        r#"<span class="vt-chip">Klaxon</span>"#
     } else {
         ""
     };
     let body = if events.is_empty() {
         format!(
             r#"<div class="vt-quiet">
-  <div><span class="pill pill--ok">平静 · quiet</span> 所选窗口（{range_label}）内未记录异常事件 · No anomaly events recorded in the selected window ({range_label}) · 自基线 self-baseline</div>
-  <div class="vt-quiet__note">z ≥ {z:.1} · window {window} · 每 {detect_secs}s 扫描</div>
+  <strong>No deviations in {range_label}</strong>
+  <span>z ≥ {z:.1} · {window} samples · every {detect_secs}s</span>
 </div>"#,
             range_label = esc(range_label),
             z = z_threshold,
@@ -935,17 +996,15 @@ fn anomaly_watch(
     };
 
     format!(
-        r#"<section id="vt-anomaly" class="card vt-anomaly" data-density="compact">
-  <div class="card__head">
-    <div class="card__title">
-      <h2>异常记录 · Anomaly ledger</h2>
-      <p class="vt-anomaly__meta">z ≥ {z:.1} · window {window} · 每 {detect_secs}s 扫描 · 自基线 self-baseline</p>
+        r#"<section id="vt-anomaly" class="vt-anomaly" data-density="compact">
+  <header class="vt-anomaly__head">
+    <div>
+      <h2>Statistical deviations</h2>
+      <p class="vt-anomaly__meta">Unusual change · z ≥ {z:.1} · {window} samples · every {detect_secs}s</p>
     </div>
-    <span class="pill pill--down">{crit} critical</span>
-    <span class="pill pill--warn">{warn} warn</span>
-    {klaxon}
-  </div>
-  <div class="card__body">
+    <div class="vt-anomaly__counts"><span class="vt-chip vt-chip--critical">{crit} critical</span><span class="vt-chip vt-chip--warning">{warn} warning</span>{klaxon}</div>
+  </header>
+  <div class="vt-anomaly__body">
     {filters}
     {body}
   </div>
@@ -973,12 +1032,12 @@ fn anomaly_filters(
     }
     let total: usize = counts.values().sum();
     let (all_class, all_current) = if active_host.is_none() {
-        ("chip chip--solid", r#" aria-current="true""#)
+        ("vt-chip is-active", r#" aria-current="true""#)
     } else {
-        ("chip chip--outline", "")
+        ("vt-chip", "")
     };
     let mut out = format!(
-        r#"<div class="vt-anomaly__filters"><a class="{all_class}" href="/?range={range}"{all_current}>全部 All <span class="countpill">{total}</span></a>"#,
+        r#"<div class="vt-anomaly__filters"><a class="{all_class}" href="/?range={range}"{all_current}>All <span class="countpill">{total}</span></a>"#,
         all_class = all_class,
         all_current = all_current,
         range = esc(range_label),
@@ -986,9 +1045,9 @@ fn anomaly_filters(
     );
     for (host, count) in counts {
         let (class, current) = if active_host == Some(host.as_str()) {
-            ("chip chip--solid chip--dot", r#" aria-current="true""#)
+            ("vt-chip is-active", r#" aria-current="true""#)
         } else {
-            ("chip chip--outline chip--dot", "")
+            ("vt-chip", "")
         };
         let href = format!("/?host={}&range={}", pct_encode(&host), range_label);
         out.push_str(&format!(
@@ -996,7 +1055,7 @@ fn anomaly_filters(
             class = class,
             current = current,
             href = esc(&href),
-            tile = odyssey::identity::letter_tile(&host, &host),
+            tile = node_glyph(&host),
             host = esc(&host),
             count = count,
         ));
@@ -1015,8 +1074,8 @@ fn event_row(event: &VtEvent, now: i64, ordinal: usize) -> String {
         EventTier::Crit => "eventline__dot--down",
     };
     let tier_word = match event.tier {
-        EventTier::Warn => "warn",
-        EventTier::Crit => "crit",
+        EventTier::Warn => "Warning",
+        EventTier::Crit => "Critical",
     };
     let direction = if event.peak_z >= 0.0 {
         "↑ surge"
@@ -1045,28 +1104,26 @@ fn event_row(event: &VtEvent, now: i64, ordinal: usize) -> String {
         dot_class = dot_class,
         ordinal = ordinal,
         tier_word = tier_word,
-        tile = odyssey::identity::letter_tile(&event.host, &event.host),
+        tile = node_glyph(&event.host),
         host = esc(&event.host),
         count = count,
         title = esc(&event.title),
         direction = direction,
         value = esc(&event.value_text),
         z = esc(&format!("{:.2}", event.peak_z)),
-        when = esc(&format!("{} 前", human_age(now - event.last_ts))),
+        when = esc(&format!("{} ago", human_age(now - event.last_ts))),
     )
 }
 
 fn metric_family(metric: &str) -> (&'static str, &'static str) {
     match metric {
-        metrics::M_CPU_PCT => ("cpu", "处理器 · CPU"),
-        metrics::M_MEM_PCT | metrics::M_MEM_USED | metrics::M_MEM_TOTAL => ("mem", "内存 · Memory"),
-        metrics::M_DISK_PCT | metrics::M_DISK_USED | metrics::M_DISK_TOTAL => {
-            ("disk", "磁盘 · Disk")
-        }
-        metrics::M_LOAD1 | metrics::M_LOAD5 | metrics::M_LOAD15 => ("load", "负载 · Load"),
-        metrics::M_NET_RX | metrics::M_NET_TX => ("net", "网络 · Network"),
-        metrics::M_UPTIME => ("uptime", "运行时间 · Uptime"),
-        _ => ("other", "指标 · Metric"),
+        metrics::M_CPU_PCT => ("cpu", "CPU"),
+        metrics::M_MEM_PCT | metrics::M_MEM_USED | metrics::M_MEM_TOTAL => ("mem", "Memory"),
+        metrics::M_DISK_PCT | metrics::M_DISK_USED | metrics::M_DISK_TOTAL => ("disk", "Disk"),
+        metrics::M_LOAD1 | metrics::M_LOAD5 | metrics::M_LOAD15 => ("load", "Load"),
+        metrics::M_NET_RX | metrics::M_NET_TX => ("net", "Network"),
+        metrics::M_UPTIME => ("uptime", "Uptime"),
+        _ => ("other", "Metric"),
     }
 }
 
@@ -1112,111 +1169,115 @@ fn event_tier(score: f64, z_threshold: f64) -> EventTier {
 }
 
 /// Cross-subdomain SSO logout (terminated at the gateway / Keystone IdP).
-const LOGOUT_URL: &str = "/_gw/auth/logout";
-
-/// The right side of the app-bar, shared with every Steadholme service: a page title, an
-/// "All apps" pill back to the apex portal, the signed-in user chip (avatar initial + email),
-/// and the cross-subdomain logout. `email` is the gateway-injected identity; the unknown
-/// placeholder (`—`) or an empty string renders no user chip (public-page friendly).
-fn userbox(email: &str) -> String {
-    let has_identity = !email.is_empty() && email != "—";
-    let chip = if has_identity {
-        let initial = email
-            .chars()
-            .next()
-            .map(|c| c.to_uppercase().to_string())
-            .unwrap_or_else(|| "H".to_string());
-        format!(
-            "<span class=\"userchip\"><span class=\"userchip__avatar\" aria-hidden=\"true\">{}</span><span class=\"user-email\" title=\"signed in\">{}</span></span>",
-            esc(&initial),
-            esc(email),
-        )
-    } else {
-        String::new()
-    };
+fn node_glyph(label: &str) -> String {
+    let initial = label
+        .chars()
+        .find(|character| character.is_alphanumeric())
+        .map(|character| character.to_uppercase().to_string())
+        .unwrap_or_else(|| "·".to_string());
     format!(
-        concat!(
-            "<span class=\"topbar__title\">Vitals</span>",
-            "<a class=\"allapps\" href=\"https://w33d.xyz\" title=\"All apps\">",
-            "<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\">",
-            "<rect x=\"3\" y=\"3\" width=\"7\" height=\"7\" rx=\"1.5\"/><rect x=\"14\" y=\"3\" width=\"7\" height=\"7\" rx=\"1.5\"/>",
-            "<rect x=\"3\" y=\"14\" width=\"7\" height=\"7\" rx=\"1.5\"/><rect x=\"14\" y=\"14\" width=\"7\" height=\"7\" rx=\"1.5\"/></svg>All apps</a>",
-            "{chip}",
-            "<a class=\"btn btn-ghost btn-sm\" href=\"{logout}\">Logout</a>",
-        ),
-        chip = chip,
-        logout = LOGOUT_URL,
+        r#"<span class="vt-nodeglyph" aria-hidden="true">{}</span>"#,
+        esc(&initial),
     )
 }
 
-fn summary_strip(hosts: &[HostView], anomalies: &[Anomaly], since: i64, now: i64) -> String {
-    let fresh = hosts.iter().filter(|h| now - h.last_ts <= 60).count();
-    let active_anomalies = anomalies.iter().filter(|a| a.ts >= since).count();
-    let host_tone = if fresh == hosts.len() {
-        "stat__val--ok"
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HostStatus {
+    Healthy,
+    Warning,
+    Critical,
+    Stale,
+}
+
+impl HostStatus {
+    fn class(self) -> &'static str {
+        match self {
+            HostStatus::Healthy => "healthy",
+            HostStatus::Warning => "warning",
+            HostStatus::Critical => "critical",
+            HostStatus::Stale => "stale",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            HostStatus::Healthy => "Healthy",
+            HostStatus::Warning => "Warning",
+            HostStatus::Critical => "Critical",
+            HostStatus::Stale => "Stale",
+        }
+    }
+}
+
+fn host_status(host: &HostView, now: i64) -> HostStatus {
+    if now - host.last_ts > 600 {
+        HostStatus::Stale
+    } else if host.hotness() >= 90.0 {
+        HostStatus::Critical
+    } else if host.hotness() >= 70.0 || host.anomaly_count > 0 {
+        HostStatus::Warning
     } else {
-        "stat__val--warn"
-    };
+        HostStatus::Healthy
+    }
+}
+
+fn host_status_reason(host: &HostView, now: i64) -> Option<String> {
+    if now - host.last_ts > 600 {
+        return Some(format!("No report for {}", human_age(now - host.last_ts)));
+    }
+    let hottest = [
+        ("CPU", host.g(metrics::M_CPU_PCT)),
+        ("Memory", host.g(metrics::M_MEM_PCT)),
+        ("Disk", host.g(metrics::M_DISK_PCT)),
+    ]
+    .into_iter()
+    .filter_map(|(label, value)| value.map(|value| (label, value)))
+    .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+    if let Some((label, value)) = hottest.filter(|(_, value)| *value >= 70.0) {
+        return Some(format!("{label} {value:.1}%"));
+    }
+    if host.anomaly_count > 0 {
+        let noun = if host.anomaly_count == 1 {
+            "deviation"
+        } else {
+            "deviations"
+        };
+        return Some(format!("{} {noun}", host.anomaly_count));
+    }
+    None
+}
+
+fn status_reason_markup(host: &HostView, now: i64) -> String {
+    host_status_reason(host, now)
+        .map(|reason| format!(r#"<span class="vt-status__reason">{}</span>"#, esc(&reason)))
+        .unwrap_or_default()
+}
+
+fn summary_strip(hosts: &[HostView], now: i64) -> String {
+    let mut healthy = 0;
+    let mut warning = 0;
+    let mut critical = 0;
+    let mut stale = 0;
+    for host in hosts {
+        match host_status(host, now) {
+            HostStatus::Healthy => healthy += 1,
+            HostStatus::Warning => warning += 1,
+            HostStatus::Critical => critical += 1,
+            HostStatus::Stale => stale += 1,
+        }
+    }
     format!(
-        r##"<section class="stat-grid vt-calibration" aria-label="fleet readings · 车队读数">
-  <h2 class="sr-only">fleet readings · 车队读数</h2>
-  <div class="stat">
-    <div class="stat__label">新鲜主机 · Fresh hosts</div>
-    <div class="stat__value {host_tone}">{fresh} / {total}</div>
-    <div class="stat__meta">≤60s fresh</div>
-  </div>
-  {cpu}
-  {mem}
-  {disk}
-  <a class="stat vt-calibration__link" href="#vt-anomaly">
-    <div class="stat__label">窗口异常 · Anomalies in window</div>
-    <div class="stat__value">{active_anomalies}</div>
-    <div class="stat__meta">in selected range</div>
-  </a>
-</section>"##,
-        host_tone = host_tone,
-        fresh = fresh,
+        r#"<section class="vt-summary" aria-label="Fleet summary">
+  <div class="vt-summary__item vt-summary__item--healthy"><span class="vt-summary__label"><i aria-hidden="true"></i>Healthy</span><strong>{healthy}</strong><span>of {total}</span></div>
+  <div class="vt-summary__item vt-summary__item--warning"><span class="vt-summary__label"><i aria-hidden="true"></i>Warning</span><strong>{warning}</strong><span>of {total}</span></div>
+  <div class="vt-summary__item vt-summary__item--critical"><span class="vt-summary__label"><i aria-hidden="true"></i>Critical</span><strong>{critical}</strong><span>of {total}</span></div>
+  <div class="vt-summary__item vt-summary__item--stale"><span class="vt-summary__label"><i aria-hidden="true"></i>Stale</span><strong>{stale}</strong><span>of {total}</span></div>
+</section>"#,
+        healthy = healthy,
+        warning = warning,
+        critical = critical,
+        stale = stale,
         total = hosts.len(),
-        cpu = summary_pct_tile("最热 CPU · Worst CPU (latest)", hosts, metrics::M_CPU_PCT),
-        mem = summary_pct_tile("最高内存 · Worst MEM (latest)", hosts, metrics::M_MEM_PCT),
-        disk = summary_pct_tile("最高磁盘 · Worst DISK (latest)", hosts, metrics::M_DISK_PCT),
-        active_anomalies = active_anomalies,
-    )
-}
-
-fn summary_pct_tile(label: &str, hosts: &[HostView], metric: &str) -> String {
-    let worst = hosts
-        .iter()
-        .filter_map(|host| host.g(metric).map(|value| (host, value)))
-        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let (value, meta, fill) = match worst {
-        Some((host, value)) => (
-            fmt_metric(metric, value),
-            host.display_name.clone(),
-            format!(
-                r#"<i class="{tone}" style="width:{pct:.1}%"></i>"#,
-                tone = pct_tone(Some(value)),
-                pct = value.clamp(0.0, 100.0),
-            ),
-        ),
-        // No reading in the fleet: an empty track, never a zero-filled bar.
-        None => (
-            "—".to_string(),
-            "无读数 · no readings".to_string(),
-            String::new(),
-        ),
-    };
-    format!(
-        r#"<div class="stat">
-  <div class="stat__label">{label}</div>
-  <div class="stat__value">{value}</div>
-  <div class="stat__meter">{fill}</div>
-  <div class="stat__meta">{meta}</div>
-</div>"#,
-        label = esc(label),
-        value = esc(&value),
-        fill = fill,
-        meta = esc(&meta),
     )
 }
 
@@ -1229,9 +1290,9 @@ fn rangebar(host: Option<&str>, active: &str) -> String {
                 None => format!("/?range={label}"),
             };
             let class = if *label == active {
-                "tab is-active"
+                "vt-range__item is-active"
             } else {
-                "tab"
+                "vt-range__item"
             };
             let current = if *label == active {
                 r#" aria-current="page""#
@@ -1247,38 +1308,57 @@ fn rangebar(host: Option<&str>, active: &str) -> String {
             )
         })
         .collect::<String>();
+    format!(r#"<nav class="vt-range" aria-label="Time range">{tabs}</nav>"#)
+}
+
+fn snapshot_controls(href: &str, now: i64) -> String {
+    let seconds = now.rem_euclid(86_400);
+    let hour = seconds / 3_600;
+    let minute = (seconds % 3_600) / 60;
+    let second = seconds % 60;
     format!(
-        r#"<nav class="tabs tabs--window vt-rangebar" aria-label="measurement window · 测量窗口">{tabs}</nav>"#
+        r#"<div class="vt-snapshot"><span>Updated {hour:02}:{minute:02}:{second:02} UTC</span><a class="vt-refresh" href="{href}">Refresh</a></div>"#,
+        href = esc(href),
     )
 }
 
-/// One host field: freshness pill, htop-density meters, and 2x2 sparklines.
+fn host_id_block(display: &str, host: &str, class: &str) -> String {
+    if display == host {
+        String::new()
+    } else {
+        format!(
+            r#"<div class="{class} mono" title="{host}">{host}</div>"#,
+            class = esc(class),
+            host = esc(host),
+        )
+    }
+}
+
+fn host_id_inline(display: &str, host: &str) -> String {
+    if display == host {
+        String::new()
+    } else {
+        format!(r#"<span class="mono">{}</span>"#, esc(host))
+    }
+}
+
+/// One aligned fleet row: host identity, five comparable signals, and anomaly count.
 fn host_card(h: &HostView, now: i64, since: i64, range_label: &str) -> String {
     let age = now - h.last_ts;
-    let (pill_class, pill_text) = freshness_pill(age);
+    let status = host_status(h, now);
+    let status_reason = status_reason_markup(h, now);
+    let host_id = host_id_block(&h.display_name, &h.host, "vt-host__id");
 
     let cpu = h.g(metrics::M_CPU_PCT);
     let mem = h.g(metrics::M_MEM_PCT);
     let disk = h.g(metrics::M_DISK_PCT);
-
+    let load = h.g(metrics::M_LOAD1);
     let mem_detail = match (h.g(metrics::M_MEM_USED), h.g(metrics::M_MEM_TOTAL)) {
-        (Some(u), Some(t)) => format!("{} / {}", human_bytes(u), human_bytes(t)),
+        (Some(used), Some(total)) => format!("{} / {}", human_bytes(used), human_bytes(total)),
         _ => "—".to_string(),
     };
     let disk_detail = match (h.g(metrics::M_DISK_USED), h.g(metrics::M_DISK_TOTAL)) {
-        (Some(u), Some(t)) => format!("{} / {}", human_bytes(u), human_bytes(t)),
-        _ => "—".to_string(),
-    };
-    let load_detail = match (
-        h.g(metrics::M_LOAD1),
-        h.g(metrics::M_LOAD5),
-        h.g(metrics::M_LOAD15),
-    ) {
-        (Some(a), Some(b), Some(c)) => format!("{a:.2} · {b:.2} · {c:.2}"),
-        _ => "—".to_string(),
-    };
-    let net_detail = match (h.g(metrics::M_NET_RX), h.g(metrics::M_NET_TX)) {
-        (Some(rx), Some(tx)) => format!("↓ {}/s · ↑ {}/s", human_bytes(rx), human_bytes(tx)),
+        (Some(used), Some(total)) => format!("{} / {}", human_bytes(used), human_bytes(total)),
         _ => "—".to_string(),
     };
     let uptime_detail = h
@@ -1286,25 +1366,6 @@ fn host_card(h: &HostView, now: i64, since: i64, range_label: &str) -> String {
         .map(|s| human_uptime(s as i64))
         .unwrap_or_else(|| "—".to_string());
     let href = format!("/?host={}&range={}", pct_encode(&h.host), range_label);
-    let tile = odyssey::identity::letter_tile(&h.display_name, &h.host).to_string();
-    let anomaly_badge = if h.anomaly_count > 0 {
-        format!(
-            r#"<span class="pill pill--warn">{n} 窗口内异常</span>"#,
-            n = h.anomaly_count
-        )
-    } else {
-        String::new()
-    };
-    let stale = age > 600;
-    let stale_class = if stale { " vt-host--stale" } else { "" };
-    let last_seen = if stale {
-        format!(
-            r#"<div class="vt-lastseen">最后上报 · last seen {}</div>"#,
-            esc(&format!("{} 前", human_age(age)))
-        )
-    } else {
-        String::new()
-    };
     let spark_range = (since, now);
     let gap = ((now - since).max(1) / 60).max(crate::config::DEFAULT_SCRAPE_INTERVAL as i64) * 2;
 
@@ -1313,6 +1374,9 @@ fn host_card(h: &HostView, now: i64, since: i64, range_label: &str) -> String {
     let cpu_head = pct_fmt(cpu);
     let mem_head = pct_fmt(mem);
     let disk_head = pct_fmt(disk);
+    let load_head = load
+        .map(|value| format!("{value:.2}"))
+        .unwrap_or_else(|| "—".to_string());
     let net_head = net_now(h);
     let cpu_gaps = !chart::gap_spans(&h.spark_cpu, gap).is_empty();
     let mem_gaps = !chart::gap_spans(&h.spark_mem, gap).is_empty();
@@ -1364,7 +1428,11 @@ fn host_card(h: &HostView, now: i64, since: i64, range_label: &str) -> String {
         gap,
         &mem_access,
     );
-    let mem_foot = spark_foot(h.spark_mem.len(), !h.forecast_mem.is_empty(), mem_gaps);
+    let mem_foot = format!(
+        r#"<div class="vt-spark__context">{}</div>{}"#,
+        esc(&mem_detail),
+        spark_foot(h.spark_mem.len(), !h.forecast_mem.is_empty(), mem_gaps),
+    );
 
     let (disk_name_id, disk_name) = pct_spark_access(
         &h.host,
@@ -1388,7 +1456,40 @@ fn host_card(h: &HostView, now: i64, since: i64, range_label: &str) -> String {
         gap,
         &disk_access,
     );
-    let disk_foot = spark_foot(h.spark_disk.len(), !h.forecast_disk.is_empty(), disk_gaps);
+    let disk_foot = format!(
+        r#"<div class="vt-spark__context">{}</div>{}"#,
+        esc(&disk_detail),
+        spark_foot(h.spark_disk.len(), !h.forecast_disk.is_empty(), disk_gaps,),
+    );
+
+    let load_lines = [Line {
+        points: h.spark_load.as_slice(),
+        class: "vt-load-1",
+        area: false,
+    }];
+    let load_gaps = detail_has_gap_bands(
+        &load_lines,
+        &Domain::Auto { headroom: 1.2 },
+        spark_range,
+        120.0,
+        36.0,
+    );
+    let load_name_id = format!("vt-spark-{}-load", h.host);
+    let mut load_name = format!(
+        "{} · load trace · {range_label} window · {} samples · latest {load_head}",
+        h.host,
+        h.spark_load.len(),
+    );
+    if load_gaps {
+        load_name.push_str(" · gaps present");
+    }
+    let load_access = Access {
+        label: &load_name,
+        desc: None,
+        name_id: &load_name_id,
+    };
+    let load_svg = net_spark(&load_lines, spark_range, &load_access);
+    let load_foot = spark_foot(h.spark_load.len(), false, load_gaps);
 
     // NET is a two-series detail chart: the merged gap union covers RX and TX while each
     // polyline stays independently segmented.
@@ -1427,94 +1528,45 @@ fn host_card(h: &HostView, now: i64, since: i64, range_label: &str) -> String {
     };
     let net_svg = net_spark(&net_lines, spark_range, &net_access);
     let net_foot = spark_foot(net_samples, false, net_gaps);
+    let anomaly_tone = if h.anomaly_count > 0 {
+        "warning"
+    } else {
+        "healthy"
+    };
 
     format!(
-        r#"<article class="vt-host{stale_class}">
-  <div class="vt-host__head">
-    {tile}
-    <div class="vt-host__title">
-      <a class="vt-host__name" href="{href}">{display}</a>
-      <div class="vt-host__id mono" title="{host_attr}">{host}</div>
-    </div>
-    <div class="vt-host__side">
-      <span class="pill {pill_class} vt-fresh">{pill_text}</span>
-      <span class="pill pill--muted">{uptime_detail}</span>
-      {anomaly_badge}
-    </div>
+        r#"<article class="vt-host vt-host--{status_class}">
+  <div class="vt-host__identity">
+    <span class="vt-status vt-status--{status_class}"><i aria-hidden="true"></i>{status_label}{status_reason}</span>
+    <a class="vt-host__name" href="{href}">{display}</a>
+    {host_id}
+    <div class="vt-host__meta">Seen {last_seen} ago · {uptime}</div>
   </div>
-  {last_seen}
-  <div class="vt-host__body">
-    {cpu_meter}
-    {mem_meter}
-    {disk_meter}
-    <div class="vt-kv">
-      <span>负载 1/5/15 <b>{load_detail}</b></span>
-      <span>网络 <b>{net_detail}</b></span>
-    </div>
-  </div>
-  <div class="vt-sparks">
-    {cpu_spark}
-    {mem_spark}
-    {disk_spark}
-    {net_spark}
+  <div class="vt-host__signal">{cpu_spark}</div>
+  <div class="vt-host__signal">{mem_spark}</div>
+  <div class="vt-host__signal">{disk_spark}</div>
+  <div class="vt-host__signal">{load_spark}</div>
+  <div class="vt-host__signal">{net_spark}</div>
+  <div class="vt-host__alerts vt-host__alerts--{anomaly_tone}">
+    <span class="vt-host__anomaly"><strong>{anomaly_count}</strong><span>Deviations</span></span>
+    <a class="vt-open" href="{href}" aria-label="Open {display}">Open <span aria-hidden="true">→</span></a>
   </div>
 </article>"#,
-        host_attr = esc(&h.host),
-        host = esc(&h.host),
+        host_id = host_id,
         display = esc(&h.display_name),
         href = esc(&href),
-        tile = tile,
-        stale_class = stale_class,
-        pill_class = pill_class,
-        pill_text = esc(&pill_text),
-        anomaly_badge = anomaly_badge,
-        uptime_detail = esc(&uptime_detail),
-        last_seen = last_seen,
-        cpu_meter = meter("CPU", cpu, ""),
-        mem_meter = meter("内存", mem, &mem_detail),
-        disk_meter = meter("磁盘", disk, &disk_detail),
-        load_detail = esc(&load_detail),
-        net_detail = esc(&net_detail),
-        cpu_spark = spark_panel("CPU %", &cpu_head, &cpu_svg, &cpu_foot),
-        mem_spark = spark_panel("MEM %", &mem_head, &mem_svg, &mem_foot),
-        disk_spark = spark_panel("DISK %", &disk_head, &disk_svg, &disk_foot),
-        net_spark = spark_panel("NET", &net_head, &net_svg, &net_foot),
-    )
-}
-
-fn meter(label: &str, pct: Option<f64>, detail: &str) -> String {
-    let state = match pct {
-        Some(x) if x >= 90.0 => "danger",
-        Some(x) if x >= 70.0 => "warn",
-        Some(_) => "ok",
-        None => "unknown",
-    };
-    // A missing metric is "not reported" — never a zero fill (S11): the bar stays hatched
-    // via data-state and the value reads "—" with an sr-only clarification.
-    let fill = match pct {
-        Some(value) => format!(
-            r#"<span class="vt-meter__fill {tone}" style="width:{fill:.1}%"></span>"#,
-            tone = pct_tone(pct),
-            fill = value.clamp(0.0, 100.0),
-        ),
-        None => String::new(),
-    };
-    let value = match pct {
-        Some(_) => esc(&pct_fmt(pct)),
-        None => "—<span class=\"sr-only\">未上报 · not reported</span>".to_string(),
-    };
-    format!(
-        r#"<div class="vt-meter" data-state="{state}">
-  <div class="vt-meter__label">{label}</div>
-  <div class="vt-meter__bar">{fill}</div>
-  <div class="vt-meter__val">{value}</div>
-  <div class="vt-meter__detail">{detail}</div>
-</div>"#,
-        state = state,
-        label = esc(label),
-        fill = fill,
-        value = value,
-        detail = esc(detail),
+        status_class = status.class(),
+        status_label = status.label(),
+        status_reason = status_reason,
+        last_seen = esc(&human_age(age)),
+        uptime = esc(&uptime_detail),
+        cpu_spark = spark_panel("CPU", &cpu_head, &cpu_svg, &cpu_foot),
+        mem_spark = spark_panel("Memory", &mem_head, &mem_svg, &mem_foot),
+        disk_spark = spark_panel("Disk", &disk_head, &disk_svg, &disk_foot),
+        load_spark = spark_panel("Load", &load_head, &load_svg, &load_foot),
+        net_spark = spark_panel("Network", &net_head, &net_svg, &net_foot),
+        anomaly_tone = anomaly_tone,
+        anomaly_count = h.anomaly_count,
     )
 }
 
@@ -1555,12 +1607,18 @@ fn net_spark(lines: &[Line<'_>], range: (i64, i64), access: &Access<'_>) -> Stri
 }
 
 fn spark_panel(label: &str, latest: &str, svg: &str, foot: &str) -> String {
+    let class = if label == "Network" {
+        "vt-sparkbox vt-sparkbox--network"
+    } else {
+        "vt-sparkbox"
+    };
     format!(
-        r#"<div class="vt-sparkbox">
+        r#"<div class="{class}">
   <div class="vt-spark__head"><span class="vt-spark__label">{label}</span><span class="vt-spark__latest">{latest}</span></div>
   {svg}
 {foot}
 </div>"#,
+        class = class,
         label = esc(label),
         latest = esc(latest),
         svg = svg,
@@ -1579,15 +1637,18 @@ fn pct_chart_tone(v: Option<f64>) -> Tone {
 
 fn net_now(h: &HostView) -> String {
     match (h.g(metrics::M_NET_RX), h.g(metrics::M_NET_TX)) {
-        (Some(rx), Some(tx)) => format!("↓ {}/s · ↑ {}/s", human_bytes(rx), human_bytes(tx)),
+        (Some(rx), Some(tx)) => {
+            format!("↓ {}/s ·\u{200b} ↑ {}/s", human_bytes(rx), human_bytes(tx))
+        }
         _ => "—".to_string(),
     }
 }
 
 fn empty_state() -> String {
-    r#"<section class="card vitals-card vitals-card--empty">
-  <h2>无读数 · No readings</h2>
-  <p class="muted">当前没有可显示的探针样本：可能尚未收到任何上报，也可能是测量存储暂不可达。No probe samples to display — either nothing has been reported yet, or the measurement store is temporarily unreachable. 确认 vitals-agent 正在运行并指向本服务的 /ingest。</p>
+    r#"<section class="vt-empty vt-empty--matrix">
+  <div class="vt-empty__mark" aria-hidden="true">—</div>
+  <h2>No readings</h2>
+  <p>Start vitals-agent to populate the fleet.</p>
 </section>"#
         .to_string()
 }
@@ -1603,18 +1664,6 @@ fn pct_fmt(v: Option<f64>) -> String {
 // Delimited region for the presentation-contract additions (freshness pills, accessible
 // names, spark feet, gap probes). Nothing frozen above is re-implemented here; these
 // helpers only compose caller-owned strings and borrow them for the chart calls.
-
-/// S5 freshness tiers as (pill tone class, bilingual text with a non-colour glyph).
-/// "fresh" is a bounded statement about the latest sample's age — never a liveness claim.
-fn freshness_pill(age: i64) -> (&'static str, String) {
-    if age <= 60 {
-        ("pill--ok", "● 新鲜 · fresh".to_string())
-    } else if age <= 600 {
-        ("pill--warn", format!("◐ 近期 · {} 前", human_age(age)))
-    } else {
-        ("pill--down", format!("○ 陈旧 · {} 前", human_age(age)))
-    }
-}
 
 /// Stable slug for a detail field's primary metric — drives the `vt-fld-*` ids.
 fn field_slug(primary_metric: &str) -> &'static str {
@@ -1677,16 +1726,19 @@ fn pct_spark_access(
 fn spark_foot(samples: usize, has_forecast: bool, has_gaps: bool) -> String {
     let mut keys = String::new();
     if samples < 2 {
-        keys.push_str(r#"<span class="vt-spark__key">窗口内无样本 · no samples in window</span>"#);
+        keys.push_str(r#"<span class="vt-spark__key">No samples in range</span>"#);
     } else {
+        keys.push_str(&format!(
+            r#"<span class="vt-spark__key">{samples} samples</span>"#
+        ));
         if has_forecast {
             keys.push_str(
-                r#"<span class="vt-spark__key vt-spark__key--proj"><i></i>proj · 投影</span>"#,
+                r#"<span class="vt-spark__key vt-spark__key--proj"><i></i>Projected</span>"#,
             );
         }
         if has_gaps {
             keys.push_str(
-                r#"<span class="vt-spark__key vt-spark__key--gap"><i></i>gap · 缺测</span>"#,
+                r#"<span class="vt-spark__key vt-spark__key--gap"><i></i>Missing data</span>"#,
             );
         }
     }
@@ -1726,16 +1778,6 @@ pub fn pct_encode(s: &str) -> String {
         }
     }
     out
-}
-
-/// Tone class for a percentage gauge: green < 70 < amber < 90 < red.
-fn pct_tone(v: Option<f64>) -> &'static str {
-    match v {
-        Some(x) if x >= 90.0 => "is-danger",
-        Some(x) if x >= 70.0 => "is-warn",
-        Some(_) => "is-ok",
-        None => "is-muted",
-    }
 }
 
 /// Human-readable byte size (binary units).
@@ -1789,14 +1831,7 @@ pub fn esc(s: &str) -> String {
         .replace('\'', "&#x27;")
 }
 
-/// Steadholme shield glyph (indigo gradient), shared with the Keystone/console app-bar.
-const SHIELD_SVG: &str = r##"<svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
-<defs><linearGradient id="hf-shield-v" x1="8" y1="4" x2="40" y2="44" gradientUnits="userSpaceOnUse">
-<stop stop-color="#818CF8"/><stop offset="1" stop-color="#4F46E5"/></linearGradient></defs>
-<path d="M24 4 8 9.5V22c0 11 7 17.4 16 21.5C33 39.4 40 33 40 22V9.5L24 4Z" fill="url(#hf-shield-v)"/>
-<rect x="20" y="19" width="8" height="13" rx="1" fill="#fff" fill-opacity="0.92"/>
-<path d="M20 19v-2.5a4 4 0 0 1 8 0V19" stroke="#fff" stroke-width="2" stroke-opacity="0.92" fill="none"/>
-</svg>"##;
+/// Product mark: a single continuous pulse, kept semantic and gradient-free.
 
 #[cfg(test)]
 mod tests {
