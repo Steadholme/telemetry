@@ -19,6 +19,7 @@ pub mod chart;
 pub mod config;
 pub mod detector;
 pub mod error;
+pub mod gateway_observe;
 pub mod handlers;
 pub mod klaxon;
 pub mod metrics;
@@ -58,6 +59,12 @@ pub fn app(state: AppState) -> Router {
         // `/vitals` route arrives here as `GET /vitals`. Register the dashboard as the
         // fallback (mirrors watchtower) so the page renders behind the gateway prefix.
         .fallback(get(handlers::dashboard::dashboard))
+        // OBSERVATION ONLY — rejects nothing. Records which callers arrive without a gateway
+        // signature so the exempt list is derived from production traffic rather than guessed,
+        // before identity verification is switched on (2026-09-14 audit, finding A).
+        .layer(axum::middleware::from_fn(
+            gateway_observe::observe_gateway_identity,
+        ))
         .with_state(state)
 }
 

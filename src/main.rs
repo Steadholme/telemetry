@@ -30,6 +30,8 @@ use axum::routing::get;
 use axum::Router;
 use tower::ServiceExt;
 
+pub mod gateway_observe;
+
 /// Default listen address — internal-only; Sluice fronts the two subdomains at this upstream.
 const DEFAULT_BIND_ADDR: &str = "0.0.0.0:9100";
 
@@ -68,6 +70,12 @@ async fn main() {
         // Host-agnostic liveness for the container HEALTHCHECK + estate probes.
         .route("/healthz", get(|| async { "ok" }))
         .fallback(dispatch)
+        // OBSERVATION ONLY — rejects nothing. Records which callers arrive without a gateway
+        // signature so the exempt list is derived from production traffic rather than guessed,
+        // before identity verification is switched on (2026-09-14 audit, finding A).
+        .layer(axum::middleware::from_fn(
+            gateway_observe::observe_gateway_identity,
+        ))
         .with_state(Vhosts {
             logs,
             traces,
